@@ -1,0 +1,359 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © cephxs
+// © fstarcapital
+
+//@version=6
+
+// - - - - - - - - -
+// cephxs / SMT [Correlated Assets]
+//
+// Smart Money Technique (SMT) divergence between the chart symbol and up to
+// four correlated assets (default: NQ, ES, YM, RTY). Works on any chart — the
+// asset that matches the chart (micros included: MNQ=NQ, MES=ES, MYM=YM,
+// M2K=RTY) is skipped automatically, so on an MNQ1! chart you compare against
+// ES / YM / RTY.
+//
+// HOW IT WORKS
+//   1. For each enabled SMT timeframe (default 30m / 1H / 4H) every asset's
+//      HTF high/low is collected on HTF bar close.
+//   2. Swing highs / lows are found on the CHART asset (pivot length = input).
+//   3. For two consecutive swing highs, each correlated asset's highest high in
+//      a window around both swings is compared. If the chart made a higher high
+//      and the asset did not (or the reverse), that is a BEARISH SMT.
+//      Swing lows mirror this for BULLISH SMT.
+//   4. A line joins the two chart swings; ONE label lists every diverging
+//      asset (labels at the same swing are merged to avoid overlap).
+//
+// REQUESTS: 3 timeframes x 5 assets = 15 request.security() calls (limit 40).
+// Signals are only evaluated on closed bars (no repainting).
+// - - - - - - - - -
+
+indicator("cephxs / SMT [Correlated Assets]",
+         shorttitle = "cephxs / SMT",
+         overlay = true,
+         max_lines_count = 500,
+         max_labels_count = 500)
+
+// - - - - - - - - -
+// Input Groups
+const string g_sym = "1. 🔗 Correlated Assets"
+const string g_tf  = "2. ⏱ SMT Timeframes"
+const string g_det = "3. 🔍 Detection"
+const string g_vis = "4. 🎨 Visuals"
+
+// - - - - - - - - -
+// Types
+type AssetSeries
+    string       name
+    bool         active
+    array<float> hi
+    array<float> lo
+
+type TFEngine
+    string tf
+    string tag
+    bool   enabled
+    array<int>         times
+    array<AssetSeries> assets      // index 0 = chart asset
+    int    count     = 0           // absolute count of closed HTF bars stored
+    int    ph_abs    = na          // last chart swing high (absolute HTF index)
+    float  ph_price  = na
+    int    pl_abs    = na          // last chart swing low
+    float  pl_price  = na
+    int    last_dir  = 0           // 1 bullish, -1 bearish, 0 none
+    string last_txt  = ""
+
+type SMTDraw
+    line  ln
+    label lb
+    int   x
+    bool  isHigh
+
+// - - - - - - - - -
+// Inputs — assets
+bool   sm1_on = input.bool(true, "", inline = "s1", group = g_sym)
+string sm1    = input.symbol("NQ1!", "Asset 1", inline = "s1", group = g_sym)
+bool   sm2_on = input.bool(true, "", inline = "s2", group = g_sym)
+string sm2    = input.symbol("ES1!", "Asset 2", inline = "s2", group = g_sym)
+bool   sm3_on = input.bool(true, "", inline = "s3", group = g_sym)
+string sm3    = input.symbol("YM1!", "Asset 3", inline = "s3", group = g_sym)
+bool   sm4_on = input.bool(true, "", inline = "s4", group = g_sym, tooltip = "The asset matching the chart symbol is skipped automatically.")
+string sm4    = input.symbol("RTY1!", "Asset 4", inline = "s4", group = g_sym)
+
+// Inputs — timeframes
+bool   tf1_on = input.bool(true, "", inline = "t1", group = g_tf)
+string tf1    = input.timeframe("30", "TF 1", inline = "t1", group = g_tf)
+bool   tf2_on = input.bool(true, "", inline = "t2", group = g_tf)
+string tf2    = input.timeframe("60", "TF 2", inline = "t2", group = g_tf)
+bool   tf3_on = input.bool(true, "", inline = "t3", group = g_tf, tooltip = "A timeframe lower than the chart timeframe is ignored.")
+string tf3    = input.timeframe("240", "TF 3", inline = "t3", group = g_tf)
+
+// Inputs — detection
+int  smt_len  = input.int(2, "Swing Length (HTF bars)", minval = 1, maxval = 10, group = g_det, tooltip = "HTF bars required on each side of a swing high/low. A swing is confirmed this many HTF bars after it forms.")
+int  smt_gap  = input.int(30, "Max HTF Bars Between Swings", minval = 3, maxval = 200, group = g_det, tooltip = "Two swings further apart than this are not compared.")
+bool smt_show_hi = input.bool(true, "Bearish SMT (swing highs)", group = g_det)
+bool smt_show_lo = input.bool(true, "Bullish SMT (swing lows)", group = g_det)
+
+// Inputs — visuals
+color smt_bear_col = input.color(#db5755, "Bearish", inline = "col", group = g_vis)
+color smt_bull_col = input.color(#00a2c7, "Bullish", inline = "col", group = g_vis)
+int   smt_width    = input.int(1, "Line Width", minval = 1, maxval = 4, group = g_vis)
+int   smt_max_draw = input.int(30, "Max SMT Drawings", minval = 5, maxval = 150, group = g_vis, tooltip = "Oldest SMT lines/labels are removed beyond this count.")
+bool  show_tbl     = input.bool(true, "Show Status Table", group = g_vis)
+
+// - - - - - - - - -
+// String helpers
+nameOf(string s) =>
+    int c = str.pos(s, ":")
+    na(c) ? s : str.substring(s, c + 1)
+
+rootOf(string s) =>
+    string t = nameOf(s)
+    int b = str.pos(t, "!")
+    na(b) or b < 2 ? t : str.substring(t, 0, b - 1)
+
+normRoot(string r) =>
+    r == "MNQ" ? "NQ" : r == "MES" ? "ES" : r == "MYM" ? "YM" : r == "M2K" ? "RTY" : r
+
+tfTag(string tf) =>
+    int s = timeframe.in_seconds(tf)
+    s % 86400 == 0 ? str.tostring(int(s / 86400)) + "D" : s % 3600 == 0 ? str.tostring(int(s / 3600)) + "H" : str.tostring(int(s / 60)) + "m"
+
+// - - - - - - - - -
+// Resolved assets / timeframes
+string chartRoot = normRoot(syminfo.root)
+bool act1 = sm1_on and normRoot(rootOf(sm1)) != chartRoot
+bool act2 = sm2_on and normRoot(rootOf(sm2)) != chartRoot
+bool act3 = sm3_on and normRoot(rootOf(sm3)) != chartRoot
+bool act4 = sm4_on and normRoot(rootOf(sm4)) != chartRoot
+
+bool tf1_ok = tf1_on and timeframe.in_seconds(tf1) >= timeframe.in_seconds()
+bool tf2_ok = tf2_on and timeframe.in_seconds(tf2) >= timeframe.in_seconds()
+bool tf3_ok = tf3_on and timeframe.in_seconds(tf3) >= timeframe.in_seconds()
+
+// Disabled / invalid slots request the chart timeframe (cheap, never used).
+string tf1_req = tf1_ok ? tf1 : timeframe.period
+string tf2_req = tf2_ok ? tf2 : timeframe.period
+string tf3_req = tf3_ok ? tf3 : timeframe.period
+
+// - - - - - - - - -
+// Engine construction
+makeEngine(string tf, bool en) =>
+    array<AssetSeries> arr = array.new<AssetSeries>()
+    array.push(arr, AssetSeries.new(syminfo.ticker, true, array.new<float>(), array.new<float>()))
+    array.push(arr, AssetSeries.new(nameOf(sm1), act1, array.new<float>(), array.new<float>()))
+    array.push(arr, AssetSeries.new(nameOf(sm2), act2, array.new<float>(), array.new<float>()))
+    array.push(arr, AssetSeries.new(nameOf(sm3), act3, array.new<float>(), array.new<float>()))
+    array.push(arr, AssetSeries.new(nameOf(sm4), act4, array.new<float>(), array.new<float>()))
+    TFEngine.new(tf, tfTag(tf), en, array.new<int>(), arr)
+
+var TFEngine e1 = makeEngine(tf1, tf1_ok)
+var TFEngine e2 = makeEngine(tf2, tf2_ok)
+var TFEngine e3 = makeEngine(tf3, tf3_ok)
+
+var array<SMTDraw> draws = array.new<SMTDraw>()
+
+// - - - - - - - - -
+// Analysis helpers
+
+// Highest high (isHigh) / lowest low in array window [center - w, center + w].
+winExt(array<float> a, int center, int w, bool isHigh) =>
+    float r = na
+    int lo = math.max(0, center - w)
+    int hi = math.min(array.size(a) - 1, center + w)
+    if hi >= lo
+        for i = lo to hi
+            float v = array.get(a, i)
+            if not na(v)
+                r := na(r) ? v : (isHigh ? math.max(r, v) : math.min(r, v))
+    r
+
+// Returns the names of correlated assets that diverge from the chart asset
+// between two chart swings (empty string = no SMT).
+smtScan(TFEngine e, bool isHigh, int absOld, int absNew, int w) =>
+    string out = ""
+    int n = array.size(e.times)
+    int iNew = n - e.count + absNew
+    int iOld = n - e.count + absOld
+    if iOld - w >= 0 and iNew >= 0 and iNew + w <= n - 1
+        AssetSeries ch = array.get(e.assets, 0)
+        float cNew = winExt(isHigh ? ch.hi : ch.lo, iNew, w, isHigh)
+        float cOld = winExt(isHigh ? ch.hi : ch.lo, iOld, w, isHigh)
+        if not na(cNew) and not na(cOld)
+            bool chartExt = isHigh ? cNew > cOld : cNew < cOld
+            for i = 1 to array.size(e.assets) - 1
+                AssetSeries a = array.get(e.assets, i)
+                if a.active
+                    float aNew = winExt(isHigh ? a.hi : a.lo, iNew, w, isHigh)
+                    float aOld = winExt(isHigh ? a.hi : a.lo, iOld, w, isHigh)
+                    if not na(aNew) and not na(aOld)
+                        bool aExt = isHigh ? aNew > aOld : aNew < aOld
+                        if aExt != chartExt
+                            out := out == "" ? a.name : out + " " + a.name
+    out
+
+// Draw the SMT line + label. Labels on the same swing are merged (no overlap).
+drawSMT(bool isHigh, int x1, float y1, int x2, float y2, string txt) =>
+    color col = isHigh ? smt_bear_col : smt_bull_col
+    bool merged = false
+    if array.size(draws) > 0
+        for i = array.size(draws) - 1 to 0
+            SMTDraw d = array.get(draws, i)
+            if d.x == x2 and d.isHigh == isHigh and not na(d.lb)
+                label.set_text(d.lb, label.get_text(d.lb) + "\n" + txt)
+                merged := true
+                break
+    line ln = line.new(x1, y1, x2, y2, xloc = xloc.bar_time, color = col, style = line.style_solid, width = smt_width)
+    label lb = na
+    if not merged
+        lb := label.new(x2, y2, txt, xloc = xloc.bar_time, style = isHigh ? label.style_label_down : label.style_label_up, color = color.new(color.white, 100), textcolor = col, size = size.tiny)
+    array.push(draws, SMTDraw.new(ln, lb, x2, isHigh))
+    while array.size(draws) > smt_max_draw
+        SMTDraw old = array.shift(draws)
+        line.delete(old.ln)
+        if not na(old.lb)
+            label.delete(old.lb)
+    true
+
+// Push a closed HTF bar for all assets, then look for a newly confirmed swing.
+// Returns [bearishSMT, bullishSMT] flags for this call.
+processEngine(TFEngine e, array<float> hs, array<float> ls, int barTime, int L, int maxGap) =>
+    bool bearF = false
+    bool bullF = false
+
+    array.push(e.times, barTime)
+    for i = 0 to array.size(e.assets) - 1
+        AssetSeries a = array.get(e.assets, i)
+        array.push(a.hi, array.get(hs, i))
+        array.push(a.lo, array.get(ls, i))
+    e.count += 1
+
+    int cap = maxGap + 2 * L + 10
+    while array.size(e.times) > cap
+        array.shift(e.times)
+        for i = 0 to array.size(e.assets) - 1
+            AssetSeries a = array.get(e.assets, i)
+            array.shift(a.hi)
+            array.shift(a.lo)
+
+    int n = array.size(e.times)
+    if n >= 2 * L + 1
+        AssetSeries c = array.get(e.assets, 0)
+        int ci = n - 1 - L
+        float hv = array.get(c.hi, ci)
+        float lv = array.get(c.lo, ci)
+        bool isPH = not na(hv)
+        bool isPL = not na(lv)
+        for j = 1 to L
+            float rh = array.get(c.hi, ci + j)
+            float lh = array.get(c.hi, ci - j)
+            float rl = array.get(c.lo, ci + j)
+            float ll = array.get(c.lo, ci - j)
+            if na(rh) or na(lh) or hv <= rh or hv < lh
+                isPH := false
+            if na(rl) or na(ll) or lv >= rl or lv > ll
+                isPL := false
+
+        int absNew = e.count - 1 - L
+
+        if isPH
+            if smt_show_hi and not na(e.ph_abs) and absNew > e.ph_abs and absNew - e.ph_abs <= maxGap
+                string nmH = smtScan(e, true, e.ph_abs, absNew, L)
+                if nmH != ""
+                    int iOldH = n - e.count + e.ph_abs
+                    drawSMT(true, array.get(e.times, iOldH), e.ph_price, array.get(e.times, ci), hv, e.tag + " " + nmH)
+                    bearF := true
+                    e.last_dir := -1
+                    e.last_txt := nmH
+            e.ph_abs := absNew
+            e.ph_price := hv
+
+        if isPL
+            if smt_show_lo and not na(e.pl_abs) and absNew > e.pl_abs and absNew - e.pl_abs <= maxGap
+                string nmL = smtScan(e, false, e.pl_abs, absNew, L)
+                if nmL != ""
+                    int iOldL = n - e.count + e.pl_abs
+                    drawSMT(false, array.get(e.times, iOldL), e.pl_price, array.get(e.times, ci), lv, e.tag + " " + nmL)
+                    bullF := true
+                    e.last_dir := 1
+                    e.last_txt := nmL
+            e.pl_abs := absNew
+            e.pl_price := lv
+
+    [bearF, bullF]
+
+// One request returns the HTF high, low and bar-open time.
+fetchHLT(string sym, string tf) =>
+    request.security(sym, tf, [high, low, time], barmerge.gaps_off, barmerge.lookahead_off)
+
+// - - - - - - - - -
+// Data requests (every bar, global scope)
+[c_h1, c_l1, c_t1]   = fetchHLT(syminfo.tickerid, tf1_req)
+[a1_h1, a1_l1, a1_t1] = fetchHLT(act1 ? sm1 : syminfo.tickerid, tf1_req)
+[a2_h1, a2_l1, a2_t1] = fetchHLT(act2 ? sm2 : syminfo.tickerid, tf1_req)
+[a3_h1, a3_l1, a3_t1] = fetchHLT(act3 ? sm3 : syminfo.tickerid, tf1_req)
+[a4_h1, a4_l1, a4_t1] = fetchHLT(act4 ? sm4 : syminfo.tickerid, tf1_req)
+
+[c_h2, c_l2, c_t2]   = fetchHLT(syminfo.tickerid, tf2_req)
+[a1_h2, a1_l2, a1_t2] = fetchHLT(act1 ? sm1 : syminfo.tickerid, tf2_req)
+[a2_h2, a2_l2, a2_t2] = fetchHLT(act2 ? sm2 : syminfo.tickerid, tf2_req)
+[a3_h2, a3_l2, a3_t2] = fetchHLT(act3 ? sm3 : syminfo.tickerid, tf2_req)
+[a4_h2, a4_l2, a4_t2] = fetchHLT(act4 ? sm4 : syminfo.tickerid, tf2_req)
+
+[c_h3, c_l3, c_t3]   = fetchHLT(syminfo.tickerid, tf3_req)
+[a1_h3, a1_l3, a1_t3] = fetchHLT(act1 ? sm1 : syminfo.tickerid, tf3_req)
+[a2_h3, a2_l3, a2_t3] = fetchHLT(act2 ? sm2 : syminfo.tickerid, tf3_req)
+[a3_h3, a3_l3, a3_t3] = fetchHLT(act3 ? sm3 : syminfo.tickerid, tf3_req)
+[a4_h3, a4_l3, a4_t3] = fetchHLT(act4 ? sm4 : syminfo.tickerid, tf3_req)
+
+// A new HTF bar has opened when the chart asset's HTF time changes; the bar
+// that just closed is the previous chart bar's value ([1]).
+bool nb1 = ta.change(c_t1) != 0
+bool nb2 = ta.change(c_t2) != 0
+bool nb3 = ta.change(c_t3) != 0
+
+// - - - - - - - - -
+// Main
+bool engine_on = barstate.isconfirmed
+bool newBearSMT = false
+bool newBullSMT = false
+
+if engine_on and tf1_ok and nb1 and not na(c_t1[1])
+    [b1, u1] = processEngine(e1, array.from(c_h1[1], a1_h1[1], a2_h1[1], a3_h1[1], a4_h1[1]), array.from(c_l1[1], a1_l1[1], a2_l1[1], a3_l1[1], a4_l1[1]), c_t1[1], smt_len, smt_gap)
+    newBearSMT := newBearSMT or b1
+    newBullSMT := newBullSMT or u1
+
+if engine_on and tf2_ok and nb2 and not na(c_t2[1])
+    [b2, u2] = processEngine(e2, array.from(c_h2[1], a1_h2[1], a2_h2[1], a3_h2[1], a4_h2[1]), array.from(c_l2[1], a1_l2[1], a2_l2[1], a3_l2[1], a4_l2[1]), c_t2[1], smt_len, smt_gap)
+    newBearSMT := newBearSMT or b2
+    newBullSMT := newBullSMT or u2
+
+if engine_on and tf3_ok and nb3 and not na(c_t3[1])
+    [b3, u3] = processEngine(e3, array.from(c_h3[1], a1_h3[1], a2_h3[1], a3_h3[1], a4_h3[1]), array.from(c_l3[1], a1_l3[1], a2_l3[1], a3_l3[1], a4_l3[1]), c_t3[1], smt_len, smt_gap)
+    newBearSMT := newBearSMT or b3
+    newBullSMT := newBullSMT or u3
+
+// - - - - - - - - -
+// Alerts
+alertcondition(newBullSMT, "Bullish SMT", "Bullish SMT divergence on {{ticker}} ({{interval}})")
+alertcondition(newBearSMT, "Bearish SMT", "Bearish SMT divergence on {{ticker}} ({{interval}})")
+alertcondition(newBullSMT or newBearSMT, "Any SMT", "SMT divergence on {{ticker}} ({{interval}})")
+
+// - - - - - - - - -
+// Status table
+var table tbl = table.new(position.bottom_right, 2, 5, border_width = 1)
+if show_tbl and barstate.islast
+    color bg = color.new(color.black, 80)
+    table.cell(tbl, 0, 0, "SMT", text_color = color.white, bgcolor = bg, text_size = size.small)
+    table.cell(tbl, 1, 0, "Last signal", text_color = color.white, bgcolor = bg, text_size = size.small)
+    array<TFEngine> engs = array.from(e1, e2, e3)
+    for i = 0 to 2
+        TFEngine en = array.get(engs, i)
+        bool ok = i == 0 ? tf1_ok : i == 1 ? tf2_ok : tf3_ok
+        string txt = not ok ? "off" : en.last_dir == 0 ? "—" : (en.last_dir > 0 ? "▲ " : "▼ ") + en.last_txt
+        color tcol = not ok or en.last_dir == 0 ? color.gray : en.last_dir > 0 ? smt_bull_col : smt_bear_col
+        table.cell(tbl, 0, i + 1, en.tag, text_color = color.white, bgcolor = bg, text_size = size.small)
+        table.cell(tbl, 1, i + 1, txt, text_color = tcol, bgcolor = bg, text_size = size.small)
+    string cmp = (act1 ? nameOf(sm1) + " " : "") + (act2 ? nameOf(sm2) + " " : "") + (act3 ? nameOf(sm3) + " " : "") + (act4 ? nameOf(sm4) : "")
+    table.cell(tbl, 0, 4, "vs", text_color = color.white, bgcolor = bg, text_size = size.small)
+    table.cell(tbl, 1, 4, cmp, text_color = color.white, bgcolor = bg, text_size = size.small)
