@@ -1,0 +1,2700 @@
+//@version=6
+
+indicator("⚡ SMT/PSP PRO + Jay Trades", shorttitle="⚡ SMT/PSP PRO + Jay Trades", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+
+
+// ==========================================
+
+// 1. USER INPUTS
+
+// ==========================================
+
+grp_sym = "1. ◈ Auto-Pair & Triad Engine"
+
+pair_mode   = input.string("Auto Triad (3 Assets)", "Correlation Mode", options=["Auto Duo (2 Assets)", "Auto Triad (3 Assets)", "Manual Duo", "Manual Triad"], group=grp_sym, tooltip="Auto Duo: Compares chart asset with 1 primary correlated asset. Auto Triad: Compares chart asset with 2 correlated assets simultaneously (e.g., NAS100 + US500 + US30). Manual: Uses custom fallback symbols below.")
+
+manual_sym1 = input.symbol("GBPUSD", "Manual Symbol 1", group=grp_sym)
+
+manual_inv1 = input.bool(false, "Manual Symbol 1 Inverse?", group=grp_sym)
+
+manual_sym2 = input.symbol("DXY", "Manual Symbol 2 (Triad)", group=grp_sym)
+
+manual_inv2 = input.bool(true, "Manual Symbol 2 Inverse?", group=grp_sym)
+
+
+
+grp_mtf = "2. ◈ Multi-Timeframe (HTF) Settings"
+
+htf_mode    = input.string("Auto", "HTF Selection Mode", options=["Auto", "Manual"], group=grp_mtf, tooltip="Auto Hierarchy: 1m -> 5m & 15m | 5m -> 15m & 1H | 15m -> 1H & 4H | 1H -> 4H & 1D")
+
+show_ctf    = input.bool(true, "Show Chart TF SMT", group=grp_mtf)
+
+show_htf1   = input.bool(true, "Show HTF-1 SMT (e.g., 5m on 1m chart)", group=grp_mtf)
+
+man_htf1    = input.timeframe("5", "Manual HTF-1", group=grp_mtf)
+
+show_htf2   = input.bool(true, "Show HTF-2 SMT (e.g., 15m on 1m chart)", group=grp_mtf)
+
+man_htf2    = input.timeframe("15", "Manual HTF-2", group=grp_mtf)
+
+no_repaint  = input.bool(true, "HTF: Closed-Bar Pivots (No Repaint)", group=grp_mtf)
+
+
+
+grp_smt = "3. ◈ SMT Logic, Sensitivity & Swing Quality"
+
+sens_mode   = input.string("High", "SMT Sensitivity", options=["Low", "Medium", "High"], group=grp_smt)
+
+clean_path  = input.bool(false, "Strict Extreme Filter (Reject Deeper Mid-Swing)", group=grp_smt)
+
+candle_chk  = input.bool(false, "Candle Direction Validation", group=grp_smt)
+
+pivot_len   = input.int(3, "Swing Pivot Length (All TFs)", minval=1, maxval=30, group=grp_smt)
+
+min_swing   = input.float(0.05, "Min Swing Size (x ATR) - Filters Micro Noise", minval=0.0, maxval=5.0, step=0.05, group=grp_smt)
+
+eq_tol      = input.float(0.0, "Equal-Level Tolerance (x ATR)", minval=0.0, maxval=1.0, step=0.01, group=grp_smt)
+
+show_conf   = input.bool(true, "Show Confirmed Pivot SMT", group=grp_smt)
+
+show_live   = input.bool(true, "Show Zero-Lag Live Sweep SMT", group=grp_smt)
+
+only_unmit  = input.bool(false, "Live Sweep: Only Unmitigated Swings", group=grp_smt)
+
+min_len     = input.int(2, "Min Line Length (Chart Bars)", minval=1, maxval=500, group=grp_smt)
+
+max_len     = input.int(300, "Max Line Length (Chart Bars)", minval=10, maxval=3000, group=grp_smt)
+
+
+
+grp_inv = "4. ◈ Broken / Invalidated SMT Cleanup"
+
+inv_action  = input.string("Delete", "When Historical SMT is Broken", options=["Delete", "Fade (Ghost)", "Keep All"], group=grp_inv)
+
+inv_trig    = input.string("Wick Break", "Invalidation Trigger", options=["Wick Break", "Body Close"], group=grp_inv)
+
+max_active  = input.int(40, "Max Tracked SMTs per TF", minval=5, maxval=150, group=grp_inv)
+
+
+
+grp_cisd = "5. ◈ Automated CISD Engine (Chart TF)"
+
+show_cisd     = input.bool(true, "Enable Auto CISD (Only After Confirmed SMT)", group=grp_cisd)
+
+cisd_src_opt  = input.string("All TFs (LTF + HTFs)", "Trigger CISD From", options=["All TFs (LTF + HTFs)", "HTF-1 & HTF-2", "HTF-2 Only"], group=grp_cisd)
+
+max_cisd      = input.int(15, "Max Historical CISDs to Show", minval=1, maxval=150, group=grp_cisd)
+
+sync_cisd_inv = input.bool(true, "Delete CISD When Parent SMT is Deleted/Broken", group=grp_cisd)
+
+cisd_expiry   = input.int(25, "CISD Max Wait Bars After Sweep (Expiry)", minval=5, maxval=120, group=grp_cisd)
+
+
+
+grp_psp = "6. ◈ PSP (Precision Swing Point / Candle Polarity)"
+
+show_psp      = input.bool(true, "Enable PSP Candle Body Coloring", group=grp_psp, tooltip="Highlights candles when correlated assets close with opposite candle polarity (one Bullish, one Bearish).")
+
+psp_filter    = input.string("All Divergent Candles", "PSP Detection Filter", options=["All Divergent Candles", "Swing High / Low Candles Only"], group=grp_psp)
+
+psp_bull_col  = input.color(#ffeb3b, "Bullish PSP Candle Color", group=grp_psp)
+
+psp_bear_col  = input.color(#e040fb, "Bearish PSP Candle Color", group=grp_psp)
+
+
+
+grp_style = "7. ◈ Labels, Aesthetics & Dashboard"
+
+lbl_mode       = input.string("Compact Pill (◈ 1m ▲ • Pair)", "SMT Label Style Mode", options=["Minimalist (1m ▲)", "Compact Pill (◈ 1m ▲ • Pair)", "Detailed (1m Bull SMT)"], group=grp_style)
+
+lbl_sz_inp     = input.string("Auto (By TF)", "SMT Label Text Size", options=["Auto (By TF)", "Tiny", "Small", "Normal", "Large"], group=grp_style)
+
+lbl_merge_tri  = input.bool(true, "Triad: Merge Same-Swing SMT Labels (★)", group=grp_style)
+
+lbl_offset_atr = input.float(0.16, "Smart Label Anti-Overlap Spacing (x ATR)", minval=0.0, maxval=1.5, step=0.02, group=grp_style)
+
+lbl_pos_ctf    = input.string("Bar End", "Chart TF Label Position", options=["Bar End", "Center", "Right Edge"], group=grp_style)
+
+lbl_pos_h1     = input.string("Center", "HTF-1 Label Position", options=["Bar End", "Center", "Right Edge"], group=grp_style)
+
+lbl_pos_h2     = input.string("Center", "HTF-2 Label Position", options=["Bar End", "Center", "Right Edge"], group=grp_style)
+
+theme_mode     = input.string("Light (Soft)", "Line & Label Color Theme", options=["Light (Soft)", "Grey", "Manual"], group=grp_style)
+
+m_bull_col     = input.color(#4dd0e1, "Manual: LTF Bullish / Bull CISD", group=grp_style)
+
+m_bear_col     = input.color(#f48fb1, "Manual: LTF Bearish / Bear CISD", group=grp_style)
+
+m_htf_bull     = input.color(#26a69a, "Manual: HTF Bullish SMT", group=grp_style)
+
+m_htf_bear     = input.color(#ec407a, "Manual: HTF Bearish SMT", group=grp_style)
+
+ctf_w          = input.int(1, "LTF Line Width", minval=1, maxval=4, group=grp_style)
+
+htf1_w         = input.int(2, "HTF-1 Line Width", minval=1, maxval=4, group=grp_style)
+
+htf2_w         = input.int(3, "HTF-2 Line Width", minval=1, maxval=4, group=grp_style)
+
+show_hud       = input.bool(true, "Show Dashboard", group=grp_style)
+
+dash_mode      = input.string("Detailed", "Dashboard Mode", options=["Minimal", "Detailed"], group=grp_style)
+
+dash_theme     = input.string("Dark", "Dashboard Background Theme", options=["Dark", "Light", "Manual"], group=grp_style)
+
+dash_hdr_bg    = input.color(color.new(#1e222d, 15), "Manual: Dashboard Header BG", group=grp_style)
+
+dash_row_bg    = input.color(color.new(#15171c, 25), "Manual: Dashboard Row BG", group=grp_style)
+
+dash_txt_col   = input.color(#e6e8ec, "Manual: Dashboard Text Color", group=grp_style)
+
+dash_brd_col   = input.color(color.new(#2a2e39, 40), "Manual: Dashboard Border Color", group=grp_style)
+
+hud_pos_inp    = input.string("Top Right", "Dashboard Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left", "Top Center", "Bottom Center"], group=grp_style)
+
+hud_sz_inp     = input.string("Small", "Dashboard Size", options=["Tiny", "Small", "Normal", "Large"], group=grp_style)
+
+
+
+grp_alrt = "8. ◈ Alert Controls (On / Off)"
+
+en_alerts      = input.bool(true, "Enable Master Alerts", group=grp_alrt)
+
+alrt_bull_sc   = input.bool(true, "Alert: Bullish SMT + CISD Confirmed", group=grp_alrt)
+
+alrt_bear_sc   = input.bool(true, "Alert: Bearish SMT + CISD Confirmed", group=grp_alrt)
+
+alrt_bull_psp  = input.bool(true, "Alert: Bullish PSP Candle", group=grp_alrt)
+
+alrt_bear_psp  = input.bool(true, "Alert: Bearish PSP Candle", group=grp_alrt)
+
+alrt_live_smt  = input.bool(false, "Alert: Live SMT Sweep (Bull / Bear)", group=grp_alrt)
+
+alrt_new_smt   = input.bool(true, "Alert: New Confirmed SMT Formed", group=grp_alrt)
+
+alrt_brk_smt   = input.bool(false, "Alert: Historical SMT Broken", group=grp_alrt)
+
+alrt_freq_inp  = input.string("Once Per Bar", "Alert Trigger Frequency", options=["Once Per Bar", "Once Per Bar Close"], group=grp_alrt)
+
+
+
+// Theme colors
+
+bool th_light  = theme_mode == "Light (Soft)"
+
+bool th_grey   = theme_mode == "Grey"
+
+color bull_col = th_light ? #8fd3dc : th_grey ? #c4c7cc : m_bull_col
+
+color bear_col = th_light ? #f4a9c0 : th_grey ? #8e9196 : m_bear_col
+
+color htf_bull = th_light ? #7cc5b8 : th_grey ? #a9acb2 : m_htf_bull
+
+color htf_bear = th_light ? #e58ba8 : th_grey ? #6f7278 : m_htf_bear
+
+
+
+// ==========================================
+
+// 2. HELPER FUNCTIONS & AUTO DUO / TRIAD ENGINE
+
+// ==========================================
+
+f_get_size(string s) =>
+
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : size.large
+
+
+
+f_get_tf_lbl_size(int tf_rank) =>
+
+    lbl_sz_inp == "Auto (By TF)" ? (tf_rank <= 1 ? size.small : size.normal) : f_get_size(lbl_sz_inp)
+
+
+
+f_get_pos(string p) =>
+
+    p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : p == "Top Center" ? position.top_center : p == "Bottom Center" ? position.bottom_center : position.top_right
+
+
+
+lbl_size_base = lbl_sz_inp == "Auto (By TF)" ? size.small : f_get_size(lbl_sz_inp)
+
+hud_size      = f_get_size(hud_sz_inp)
+
+bool is_min   = lbl_mode == "Minimalist (1m ▲)"
+
+bool is_pill  = lbl_mode == "Compact Pill (◈ 1m ▲ • Pair)"
+
+bool is_auto  = pair_mode == "Auto Duo (2 Assets)" or pair_mode == "Auto Triad (3 Assets)"
+
+bool is_tri   = pair_mode == "Auto Triad (3 Assets)" or pair_mode == "Manual Triad"
+
+
+
+f_get_auto_pairs() =>
+
+    string r     = str.upper(syminfo.root)
+
+    string tk    = str.upper(syminfo.ticker)
+
+    string comp1 = manual_sym1
+
+    bool   inv1  = manual_inv1
+
+    string comp2 = manual_sym2
+
+    bool   inv2  = manual_inv2
+
+    bool use_fut = syminfo.type == "futures" or str.endswith(tk, "1!") or str.endswith(tk, "2!")
+
+
+
+    if is_auto
+
+        // Default inverse flags to false in Auto mode; only inverse pairs set true below
+
+        inv1 := false
+
+        inv2 := false
+
+        if use_fut
+
+            if r == "NQ" or r == "MNQ"
+
+                comp1 := r == "MNQ" ? "CME_MINI:MES1!" : "CME_MINI:ES1!"
+
+                comp2 := r == "MNQ" ? "CBOT_MINI:MYM1!" : "CBOT_MINI:YM1!"
+
+            else if r == "ES" or r == "MES"
+
+                comp1 := r == "MES" ? "CME_MINI:MNQ1!" : "CME_MINI:NQ1!"
+
+                comp2 := r == "MES" ? "CBOT_MINI:MYM1!" : "CBOT_MINI:YM1!"
+
+            else if r == "YM" or r == "MYM" or r == "RTY" or r == "M2K"
+
+                comp1 := (r == "MYM" or r == "M2K") ? "CME_MINI:MES1!" : "CME_MINI:ES1!"
+
+                comp2 := (r == "MYM" or r == "M2K") ? "CME_MINI:MNQ1!" : "CME_MINI:NQ1!"
+
+            else if r == "GC" or r == "MGC" or r == "QO"
+
+                comp1 := r == "MGC" ? "COMEX:SIL1!" : "COMEX:SI1!"
+
+                comp2 := "NYMEX:PL1!"
+
+            else if r == "SI" or r == "SIL" or r == "QI"
+
+                comp1 := r == "SIL" ? "COMEX:MGC1!" : "COMEX:GC1!"
+
+                comp2 := "NYMEX:PL1!"
+
+            else if r == "PL" or r == "HG" or r == "MHG"
+
+                comp1 := "COMEX:GC1!"
+
+                comp2 := "COMEX:SI1!"
+
+            else if r == "6E" or r == "M6E"
+
+                comp1 := r == "M6E" ? "CME:M6B1!" : "CME:6B1!"
+
+                comp2 := "ICEUS:DX1!"
+
+                inv2  := true
+
+            else if r == "6B" or r == "M6B"
+
+                comp1 := r == "M6B" ? "CME:M6E1!" : "CME:6E1!"
+
+                comp2 := "ICEUS:DX1!"
+
+                inv2  := true
+
+            else if r == "DX"
+
+                comp1 := "CME:6E1!"
+
+                inv1  := true
+
+                comp2 := "CME:6B1!"
+
+                inv2  := true
+
+            else if r == "6A" or r == "M6A"
+
+                comp1 := "CME:6N1!"
+
+                comp2 := "CME:6C1!"
+
+            else if r == "6N"
+
+                comp1 := "CME:6A1!"
+
+                comp2 := "CME:6C1!"
+
+            else if r == "6C"
+
+                comp1 := "CME:6A1!"
+
+                comp2 := "CME:6N1!"
+
+            else if r == "6S" or r == "6J"
+
+                comp1 := "CME:6E1!"
+
+                comp2 := "ICEUS:DX1!"
+
+                inv2  := true
+
+            else if r == "CL" or r == "MCL" or r == "QM"
+
+                comp1 := "NYMEX:BZ1!"
+
+                comp2 := "NYMEX:NG1!"
+
+            else if r == "BZ"
+
+                comp1 := "NYMEX:CL1!"
+
+                comp2 := "NYMEX:NG1!"
+
+            else if r == "NG" or r == "QG"
+
+                comp1 := "NYMEX:CL1!"
+
+                comp2 := "NYMEX:BZ1!"
+
+            else if r == "ZB" or r == "UB"
+
+                comp1 := "CBOT:ZN1!"
+
+                comp2 := "CBOT:ZF1!"
+
+            else if r == "ZN"
+
+                comp1 := "CBOT:ZB1!"
+
+                comp2 := "CBOT:ZF1!"
+
+            else if r == "ZF"
+
+                comp1 := "CBOT:ZN1!"
+
+                comp2 := "CBOT:ZB1!"
+
+            else if r == "FDAX" or r == "FDXM"
+
+                comp1 := "EUREX:FESX1!"
+
+                comp2 := "CME_MINI:ES1!"
+
+            else if r == "FESX"
+
+                comp1 := "EUREX:FDAX1!"
+
+                comp2 := "CME_MINI:ES1!"
+
+            else if r == "BTC" or r == "MBT"
+
+                comp1 := "CME:ETH1!"
+
+                comp2 := "CME_MINI:NQ1!"
+
+            else if r == "ETH" or r == "MET"
+
+                comp1 := "CME:BTC1!"
+
+                comp2 := "CME_MINI:NQ1!"
+
+            else
+
+                inv1 := manual_inv1
+
+                inv2 := manual_inv2
+
+        else
+
+            if str.startswith(tk, "NAS100") or str.startswith(tk, "USTEC") or str.startswith(tk, "US100") or r == "NQ" or r == "MNQ"
+
+                comp1 := "PEPPERSTONE:US500"
+
+                comp2 := "PEPPERSTONE:US30"
+
+            else if str.startswith(tk, "US500") or str.startswith(tk, "SPX500") or r == "SPX" or r == "ES" or r == "MES"
+
+                comp1 := "PEPPERSTONE:NAS100"
+
+                comp2 := "PEPPERSTONE:US30"
+
+            else if str.startswith(tk, "US30") or str.startswith(tk, "DJ30") or str.startswith(tk, "US2000") or str.startswith(tk, "RUS2000") or r == "YM" or r == "MYM" or r == "RTY" or r == "M2K"
+
+                comp1 := "PEPPERSTONE:US500"
+
+                comp2 := "PEPPERSTONE:NAS100"
+
+            else if str.startswith(tk, "XAUUSD") or tk == "GOLD" or r == "GC" or r == "MGC"
+
+                comp1 := "PEPPERSTONE:XAGUSD"
+
+                comp2 := "PEPPERSTONE:XPTUSD"
+
+            else if str.startswith(tk, "XAGUSD") or tk == "SILVER" or r == "SI" or r == "SIL"
+
+                comp1 := "PEPPERSTONE:XAUUSD"
+
+                comp2 := "PEPPERSTONE:XPTUSD"
+
+            else if str.startswith(tk, "XPTUSD") or tk == "PLATINUM" or r == "PL"
+
+                comp1 := "PEPPERSTONE:XAUUSD"
+
+                comp2 := "PEPPERSTONE:XAGUSD"
+
+            else if str.startswith(tk, "EURUSD") or r == "6E"
+
+                comp1 := "PEPPERSTONE:GBPUSD"
+
+                comp2 := "PEPPERSTONE:USDCHF"
+
+                inv2  := true
+
+            else if str.startswith(tk, "GBPUSD") or r == "6B"
+
+                comp1 := "PEPPERSTONE:EURUSD"
+
+                comp2 := "PEPPERSTONE:USDCHF"
+
+                inv2  := true
+
+            else if str.startswith(tk, "AUDUSD") or r == "6A"
+
+                comp1 := "PEPPERSTONE:NZDUSD"
+
+                comp2 := "PEPPERSTONE:USDCAD"
+
+                inv2  := true
+
+            else if str.startswith(tk, "NZDUSD") or r == "6N"
+
+                comp1 := "PEPPERSTONE:AUDUSD"
+
+                comp2 := "PEPPERSTONE:USDCAD"
+
+                inv2  := true
+
+            else if str.startswith(tk, "USDCAD")
+
+                comp1 := "PEPPERSTONE:AUDUSD"
+
+                inv1  := true
+
+                comp2 := "PEPPERSTONE:NZDUSD"
+
+                inv2  := true
+
+            else if str.startswith(tk, "DXY") or str.startswith(tk, "USDX") or str.startswith(tk, "USDCHF") or r == "DX"
+
+                comp1 := "PEPPERSTONE:EURUSD"
+
+                inv1  := true
+
+                comp2 := "PEPPERSTONE:GBPUSD"
+
+                inv2  := true
+
+            else if str.startswith(tk, "EURJPY")
+
+                comp1 := "PEPPERSTONE:GBPJPY"
+
+                comp2 := "PEPPERSTONE:USDJPY"
+
+            else if str.startswith(tk, "GBPJPY")
+
+                comp1 := "PEPPERSTONE:EURJPY"
+
+                comp2 := "PEPPERSTONE:USDJPY"
+
+            else if str.startswith(tk, "USDJPY")
+
+                comp1 := "PEPPERSTONE:EURJPY"
+
+                comp2 := "PEPPERSTONE:GBPJPY"
+
+            else if str.startswith(tk, "AUDJPY")
+
+                comp1 := "PEPPERSTONE:NZDJPY"
+
+                comp2 := "PEPPERSTONE:CADJPY"
+
+            else if str.startswith(tk, "NZDJPY")
+
+                comp1 := "PEPPERSTONE:AUDJPY"
+
+                comp2 := "PEPPERSTONE:CADJPY"
+
+            else if str.startswith(tk, "CADJPY")
+
+                comp1 := "PEPPERSTONE:AUDJPY"
+
+                comp2 := "PEPPERSTONE:NZDJPY"
+
+            else if str.startswith(tk, "GER40") or str.startswith(tk, "DE40") or str.startswith(tk, "DAX") or r == "FDAX"
+
+                comp1 := "PEPPERSTONE:UK100"
+
+                comp2 := "PEPPERSTONE:FRA40"
+
+            else if str.startswith(tk, "UK100") or str.startswith(tk, "FTSE")
+
+                comp1 := "PEPPERSTONE:GER40"
+
+                comp2 := "PEPPERSTONE:FRA40"
+
+            else if str.startswith(tk, "FRA40") or str.startswith(tk, "FR40") or str.startswith(tk, "CAC")
+
+                comp1 := "PEPPERSTONE:GER40"
+
+                comp2 := "PEPPERSTONE:UK100"
+
+            else if str.startswith(tk, "USOIL") or str.startswith(tk, "WTI") or str.startswith(tk, "XTIUSD") or r == "CL"
+
+                comp1 := "PEPPERSTONE:UKOIL"
+
+                comp2 := "PEPPERSTONE:NATGAS"
+
+            else if str.startswith(tk, "UKOIL") or str.startswith(tk, "BRENT") or str.startswith(tk, "XBRUSD") or r == "BZ"
+
+                comp1 := "PEPPERSTONE:USOIL"
+
+                comp2 := "PEPPERSTONE:NATGAS"
+
+            else if str.startswith(tk, "NATGAS") or str.startswith(tk, "XNGUSD") or str.startswith(tk, "NGAS")
+
+                comp1 := "PEPPERSTONE:USOIL"
+
+                comp2 := "PEPPERSTONE:UKOIL"
+
+            else if str.startswith(tk, "BTCUSD")
+
+                comp1 := "PEPPERSTONE:ETHUSD"
+
+                comp2 := "BINANCE:SOLUSDT"
+
+            else if str.startswith(tk, "ETHUSD")
+
+                comp1 := "PEPPERSTONE:BTCUSD"
+
+                comp2 := "BINANCE:SOLUSDT"
+
+            else if str.startswith(tk, "SOLUSD")
+
+                comp1 := "PEPPERSTONE:BTCUSD"
+
+                comp2 := "PEPPERSTONE:ETHUSD"
+
+            else
+
+                inv1 := manual_inv1
+
+                inv2 := manual_inv2
+
+    [comp1, inv1, comp2, inv2]
+
+
+
+[target_sym1, is_inv1, target_sym2, is_inv2] = f_get_auto_pairs()
+
+
+
+string[] tp1_parts = str.split(target_sym1, ":")
+
+string pair_name1  = array.get(tp1_parts, array.size(tp1_parts) - 1)
+
+string[] tp2_parts = str.split(target_sym2, ":")
+
+string pair_name2  = array.get(tp2_parts, array.size(tp2_parts) - 1)
+
+string main_name   = syminfo.ticker
+
+string hdr_pairs   = is_tri ? (main_name + " ⇄ " + pair_name1 + " • " + pair_name2) : (main_name + " ⇄ " + pair_name1)
+
+
+
+f_get_htfs() =>
+
+    string tf1 = man_htf1
+
+    string tf2 = man_htf2
+
+    if htf_mode == "Auto"
+
+        int sec = timeframe.in_seconds(timeframe.period)
+
+        if sec <= 60
+
+            tf1 := "5"
+
+            tf2 := "15"
+
+        else if sec <= 300
+
+            tf1 := "15"
+
+            tf2 := "60"
+
+        else if sec <= 900
+
+            tf1 := "60"
+
+            tf2 := "240"
+
+        else if sec <= 3600
+
+            tf1 := "240"
+
+            tf2 := "D"
+
+        else
+
+            tf1 := "D"
+
+            tf2 := "W"
+
+    [tf1, tf2]
+
+
+
+[htf1_str, htf2_str] = f_get_htfs()
+
+
+
+f_tf_label(string tf) =>
+
+    tf == "1" ? "1m" : tf == "3" ? "3m" : tf == "5" ? "5m" : tf == "15" ? "15m" : tf == "30" ? "30m" : tf == "60" ? "1H" : tf == "240" ? "4H" : tf
+
+
+
+bool valid_htf1 = show_htf1 and timeframe.in_seconds(htf1_str) > timeframe.in_seconds(timeframe.period)
+
+bool valid_htf2 = show_htf2 and timeframe.in_seconds(htf2_str) > timeframe.in_seconds(timeframe.period)
+
+
+
+f_out_h(float v, float prev, float tol, bool inv) =>
+
+    inv ? (v < prev - tol) : (v > prev + tol)
+
+
+
+f_out_l(float v, float prev, float tol, bool inv) =>
+
+    inv ? (v > prev + tol) : (v < prev - tol)
+
+
+
+// ==========================================
+
+// 3. LIGHTWEIGHT WICK LOCATOR, CLEAN PATH & CISD SCANNER
+
+// ==========================================
+
+f_find_exact_wick_bar(int t_open, int t_close, bool is_high) =>
+
+    int best_bar = bar_index
+
+    float best_val = is_high ? -1e10 : 1e10
+
+    bool found = false
+
+    int max_back = math.min(bar_index, 600)
+
+    for i = 0 to max_back
+
+        int bt = time[i]
+
+        if na(bt) or bt < t_open
+
+            break
+
+        if bt < t_close
+
+            float v = is_high ? high[i] : low[i]
+
+            if (is_high and v >= best_val) or (not is_high and v <= best_val)
+
+                best_val := v
+
+                best_bar := bar_index - i
+
+                found := true
+
+    [best_bar, best_val, found]
+
+
+
+f_find_local_ext(int center_b, int radius, bool is_high) =>
+
+    int best_b = center_b
+
+    int c_off  = math.max(0, math.min(bar_index, bar_index - center_b))
+
+    int s_off  = math.max(0, c_off - radius)
+
+    int e_off  = math.min(math.min(bar_index, 600), c_off + radius)
+
+    float best_v = is_high ? high[c_off] : low[c_off]
+
+    for i = s_off to e_off
+
+        float v = is_high ? high[i] : low[i]
+
+        if (is_high and v >= best_v) or (not is_high and v <= best_v)
+
+            best_v := v
+
+            best_b := bar_index - i
+
+    [best_b, best_v]
+
+
+
+f_is_clean_path(int x1, float y1, int x2, float y2, bool is_bull, float tol) =>
+
+    bool clean = true
+
+    int span = x2 - x1
+
+    if span > 1
+
+        float ext_bound = is_bull ? (math.min(y1, y2) - tol) : (math.max(y1, y2) + tol)
+
+        int start_off = math.max(0, bar_index - x2 + 1)
+
+        int end_off   = math.min(math.min(bar_index, 1200), bar_index - x1 - 1)
+
+        if end_off >= start_off
+
+            for i = start_off to end_off
+
+                int cur_x = bar_index - i
+
+                float ratio = float(cur_x - x1) / float(span)
+
+                float line_y = y1 + (y2 - y1) * ratio
+
+                if clean_path
+
+                    if (is_bull and low[i] < ext_bound) or (not is_bull and high[i] > ext_bound)
+
+                        clean := false
+
+                        break
+
+                float body_ext = is_bull ? math.min(open[i], close[i]) : math.max(open[i], close[i])
+
+                if (is_bull and body_ext < line_y - tol) or (not is_bull and body_ext > line_y + tol)
+
+                    clean := false
+
+                    break
+
+    clean
+
+
+
+f_find_cisd_origin(int pivot_b, bool is_bull_cisd) =>
+
+    int offset = math.max(0, math.min(bar_index, bar_index - pivot_b))
+
+    int seq_start = offset
+
+    bool seq_found = false
+
+    int max_scan = math.min(offset + 25, math.min(bar_index, 1200))
+
+    for i = offset to max_scan
+
+        bool is_opp_candle = is_bull_cisd ? (close[i] < open[i]) : (close[i] > open[i])
+
+        bool is_doji       = close[i] == open[i]
+
+        if is_opp_candle
+
+            seq_start := i
+
+            seq_found := true
+
+        else if is_doji and seq_found
+
+            continue
+
+        else
+
+            if seq_found or i >= offset + 3
+
+                break
+
+    float cisd_p = seq_found ? open[seq_start] : (is_bull_cisd ? math.max(open[offset], close[offset]) : math.min(open[offset], close[offset]))
+
+    int   cisd_b = bar_index - seq_start
+
+    [cisd_b, cisd_p]
+
+
+
+// ==========================================
+
+// 4. MULTI-TIMEFRAME DATA EXTRACTION (DUO + TRIAD)
+
+// ==========================================
+
+f_calc_pivots(int sh) =>
+
+    int w = 2 * pivot_len + 1
+
+    float atr_v  = ta.atr(14)
+
+    float src_h  = high[sh]
+
+    float src_l  = low[sh]
+
+    float ph_raw = ta.pivothigh(src_h, pivot_len, pivot_len)
+
+    float pl_raw = ta.pivotlow(src_l, pivot_len, pivot_len)
+
+    float win_hi = ta.highest(src_h, w)
+
+    float win_lo = ta.lowest(src_l, w)
+
+    float ph = (not na(ph_raw) and (ph_raw - win_lo) >= min_swing * atr_v) ? ph_raw : na
+
+    float pl = (not na(pl_raw) and (win_hi - pl_raw) >= min_swing * atr_v) ? pl_raw : na
+
+    int t_open   = time[pivot_len + sh]
+
+    int t_close  = time_close[pivot_len + sh]
+
+    float pc_o   = open[pivot_len + sh]
+
+    float pc_c   = close[pivot_len + sh]
+
+    [high, low, open, close, ph, pl, t_open, t_close, win_hi, win_lo, atr_v, pc_o, pc_c]
+
+
+
+int h_sh = no_repaint ? 1 : 0
+
+string sym2_req = is_tri ? target_sym2 : syminfo.tickerid
+
+
+
+[_, _, _, _, m_ph0, m_pl0, m_to0, m_tc0, _, _, m_atr0, m_po0, m_pc0] = f_calc_pivots(0)
+
+[c1_h0, c1_l0, c1_o0, c1_c0, c1_ph0, c1_pl0, c1_to0, c1_tc0, c1_wh0, c1_wl0, c1_atr0, _, _] = request.security(target_sym1, timeframe.period, f_calc_pivots(0), lookahead=barmerge.lookahead_off)
+
+[c2_h0, c2_l0, c2_o0, c2_c0, c2_ph0, c2_pl0, c2_to0, c2_tc0, c2_wh0, c2_wl0, c2_atr0, _, _] = request.security(sym2_req, timeframe.period, f_calc_pivots(0), lookahead=barmerge.lookahead_off)
+
+
+
+[_, _, _, _, m_ph1, m_pl1, m_to1, m_tc1, _, _, m_atr1, m_po1, m_pc1] = request.security(syminfo.tickerid, htf1_str, f_calc_pivots(h_sh), lookahead=barmerge.lookahead_off)
+
+[_, _, _, _, c1_ph1, c1_pl1, c1_to1, c1_tc1, c1_wh1, c1_wl1, c1_atr1, _, _] = request.security(target_sym1, htf1_str, f_calc_pivots(h_sh), lookahead=barmerge.lookahead_off)
+
+[_, _, _, _, c2_ph1, c2_pl1, c2_to1, c2_tc1, c2_wh1, c2_wl1, c2_atr1, _, _] = request.security(sym2_req, htf1_str, f_calc_pivots(h_sh), lookahead=barmerge.lookahead_off)
+
+
+
+[_, _, _, _, m_ph2, m_pl2, m_to2, m_tc2, _, _, m_atr2, m_po2, m_pc2] = request.security(syminfo.tickerid, htf2_str, f_calc_pivots(h_sh), lookahead=barmerge.lookahead_off)
+
+[_, _, _, _, c1_ph2, c1_pl2, c1_to2, c1_tc2, c1_wh2, c1_wl2, c1_atr2, _, _] = request.security(target_sym1, htf2_str, f_calc_pivots(h_sh), lookahead=barmerge.lookahead_off)
+
+[_, _, _, _, c2_ph2, c2_pl2, c2_to2, c2_tc2, c2_wh2, c2_wl2, c2_atr2, _, _] = request.security(sym2_req, htf2_str, f_calc_pivots(h_sh), lookahead=barmerge.lookahead_off)
+
+
+
+// ==========================================
+
+// 4B. SYMMETRIC DUO & TRIAD PSP (CANDLE POLARITY) ENGINE
+
+// ==========================================
+
+bool m_is_bull  = close > open
+
+bool m_is_bear  = close < open
+
+bool c1_is_bull = not na(c1_c0) and not na(c1_o0) and (c1_c0 > c1_o0)
+
+bool c1_is_bear = not na(c1_c0) and not na(c1_o0) and (c1_c0 < c1_o0)
+
+bool c2_is_bull = is_tri and not na(c2_c0) and not na(c2_o0) and (c2_c0 > c2_o0)
+
+bool c2_is_bear = is_tri and not na(c2_c0) and not na(c2_o0) and (c2_c0 < c2_o0)
+
+
+
+bool psp1_bull = is_inv1 ? (m_is_bull and c1_is_bull) : (m_is_bull and c1_is_bear)
+
+bool psp1_bear = is_inv1 ? (m_is_bear and c1_is_bear) : (m_is_bear and c1_is_bull)
+
+bool psp2_bull = is_tri and (is_inv2 ? (m_is_bull and c2_is_bull) : (m_is_bull and c2_is_bear))
+
+bool psp2_bear = is_tri and (is_inv2 ? (m_is_bear and c2_is_bear) : (m_is_bear and c2_is_bull))
+
+
+
+bool raw_psp_bull = psp1_bull or psp2_bull
+
+bool raw_psp_bear = psp1_bear or psp2_bear
+
+
+
+float c1_low_n  = ta.lowest(nz(c1_l0, low), pivot_len)
+
+float c1_high_n = ta.highest(nz(c1_h0, high), pivot_len)
+
+float c2_low_n  = ta.lowest(nz(c2_l0, low), pivot_len)
+
+float c2_high_n = ta.highest(nz(c2_h0, high), pivot_len)
+
+
+
+bool m_sw_ext  = (low <= ta.lowest(low, pivot_len) or low[1] <= ta.lowest(low, pivot_len)) or (high >= ta.highest(high, pivot_len) or high[1] >= ta.highest(high, pivot_len))
+
+bool c1_sw_ext = (not na(c1_l0) and (c1_l0 <= c1_low_n or nz(c1_l0[1], c1_l0) <= c1_low_n)) or (not na(c1_h0) and (c1_h0 >= c1_high_n or nz(c1_h0[1], c1_h0) >= c1_high_n))
+
+bool c2_sw_ext = is_tri and ((not na(c2_l0) and (c2_l0 <= c2_low_n or nz(c2_l0[1], c2_l0) <= c2_low_n)) or (not na(c2_h0) and (c2_h0 >= c2_high_n or nz(c2_h0[1], c2_h0) >= c2_high_n)))
+
+bool psp_sw_ok = psp_filter == "All Divergent Candles" or m_sw_ext or c1_sw_ext or c2_sw_ext
+
+
+
+bool psp_bull = show_psp and raw_psp_bull and psp_sw_ok
+
+bool psp_bear = show_psp and raw_psp_bear and psp_sw_ok
+
+
+
+var int last_psp_bar = na
+
+var int last_psp_dir = 0
+
+if psp_bull
+
+    last_psp_bar := bar_index
+
+    last_psp_dir := 1
+
+else if psp_bear
+
+    last_psp_bar := bar_index
+
+    last_psp_dir := -1
+
+
+
+color psp_bar_col = psp_bull ? psp_bull_col : psp_bear ? psp_bear_col : na
+
+barcolor(psp_bar_col, title="PSP Candle Body Color")
+
+
+
+// ==========================================
+
+// 5. CORE SMT + ENHANCED LABEL & CISD ENGINE
+
+// ==========================================
+
+type HistoricalSMT
+
+    line   ln
+
+    label  lb
+
+    bool   is_bull
+
+    float  inv_lvl
+
+    int    start_bar
+
+    int    end_bar
+
+    color  base_col
+
+    string base_txt
+
+    string base_tip
+
+    bool   broken = false
+
+
+
+type ConfirmedCISD
+
+    line  ln
+
+    label lb
+
+    bool  is_bull
+
+    int   smt_end_bar
+
+    float smt_inv_lvl
+
+    color base_col
+
+    bool  broken = false
+
+
+
+type SwP
+
+    int   bar
+
+    float mp
+
+    float cp
+
+
+
+type CISDTracker
+
+    bool   active       = false
+
+    bool   triggered    = false
+
+    bool   just_conf    = false
+
+    bool   is_bull      = true
+
+    float  level        = na
+
+    float  ext_lvl      = na
+
+    float  smt_inv_lvl  = na
+
+    int    orig_bar     = na
+
+    int    smt_bar      = na
+
+    int    last_conf_ob = na
+
+    int    last_conf_tb = na
+
+    string tf_tag       = ""
+
+    color  base_col     = na
+
+    line   ln           = na
+
+    label  lb           = na
+
+    ConfirmedCISD[] history
+
+
+
+type SMTState
+
+    int   tf_rank    = 0
+
+    int   pair_slot  = 0
+
+    float prev_ph_m  = na
+
+    float prev_ph_c  = na
+
+    int   prev_ph_b  = na
+
+    int   last_ph_to = na
+
+    bool  ph_mit     = false
+
+    float prev_pl_m  = na
+
+    float prev_pl_c  = na
+
+    int   prev_pl_b  = na
+
+    int   last_pl_to = na
+
+    bool  pl_mit     = false
+
+    int   last_cb_to = na
+
+    int   last_cu_to = na
+
+    int   ls_bear_x1 = na
+
+    int   ls_bear_x2 = na
+
+    int   ls_bull_x1 = na
+
+    int   ls_bull_x2 = na
+
+    line  live_b_ln  = na
+
+    label live_b_lb  = na
+
+    line  live_u_ln  = na
+
+    label live_u_lb  = na
+
+    int   last_dir   = 0
+
+    int   last_bar   = na
+
+    int   act_bull   = 0
+
+    int   act_bear   = 0
+
+    bool  bear_live  = false
+
+    bool  bull_live  = false
+
+    bool  new_bear   = false
+
+    bool  new_bull   = false
+
+    bool  brk_bear   = false
+
+    bool  brk_bull   = false
+
+    HistoricalSMT[] records
+
+    SwP[] ms_bear
+
+    SwP[] cs_bear
+
+    SwP[] ms_bull
+
+    SwP[] cs_bull
+
+
+
+f_new_state(int rank, int slot) =>
+
+    SMTState s  = SMTState.new()
+
+    s.tf_rank   := rank
+
+    s.pair_slot := slot
+
+    s.records   := array.from(HistoricalSMT.new(na, na, true, 0.0, 0, 0, na, "", "", false))
+
+    array.clear(s.records)
+
+    s.ms_bear   := array.from(SwP.new(0, 0.0, 0.0))
+
+    array.clear(s.ms_bear)
+
+    s.cs_bear   := array.from(SwP.new(0, 0.0, 0.0))
+
+    array.clear(s.cs_bear)
+
+    s.ms_bull   := array.from(SwP.new(0, 0.0, 0.0))
+
+    array.clear(s.ms_bull)
+
+    s.cs_bull   := array.from(SwP.new(0, 0.0, 0.0))
+
+    array.clear(s.cs_bull)
+
+    s
+
+
+
+f_new_cisd() =>
+
+    CISDTracker c = CISDTracker.new()
+
+    c.history := array.from(ConfirmedCISD.new(na, na, true, 0, 0.0, na, false))
+
+    array.clear(c.history)
+
+    c
+
+
+
+var st_ctf_1  = f_new_state(0, 0)
+
+var st_htf1_1 = f_new_state(1, 0)
+
+var st_htf2_1 = f_new_state(2, 0)
+
+
+
+var st_ctf_2  = f_new_state(0, 1)
+
+var st_htf1_2 = f_new_state(1, 1)
+
+var st_htf2_2 = f_new_state(2, 1)
+
+
+
+var cisd_st   = f_new_cisd()
+
+
+
+cisd_st.just_conf := false
+
+
+
+f_store_cisd(line ln, label lb, bool is_bull, int smt_end_bar, float smt_inv_lvl, color col) =>
+
+    array.push(cisd_st.history, ConfirmedCISD.new(ln, lb, is_bull, smt_end_bar, smt_inv_lvl, col, false))
+
+    while array.size(cisd_st.history) > max_cisd
+
+        ConfirmedCISD old = array.shift(cisd_st.history)
+
+        line.delete(old.ln)
+
+        label.delete(old.lb)
+
+    true
+
+
+
+f_check_cisd_invalidations() =>
+
+    if sync_cisd_inv and array.size(cisd_st.history) > 0 and inv_action != "Keep All"
+
+        float upper_chk = inv_trig == "Wick Break" ? high : math.max(open, close)
+
+        float lower_chk = inv_trig == "Wick Break" ? low  : math.min(open, close)
+
+        for i = array.size(cisd_st.history) - 1 to 0
+
+            ConfirmedCISD item = array.get(cisd_st.history, i)
+
+            if not item.broken and bar_index > item.smt_end_bar + pivot_len
+
+                bool is_broken = item.is_bull ? (lower_chk < item.smt_inv_lvl) : (upper_chk > item.smt_inv_lvl)
+
+                if is_broken
+
+                    if inv_action == "Delete"
+
+                        line.delete(item.ln)
+
+                        label.delete(item.lb)
+
+                        array.remove(cisd_st.history, i)
+
+                    else
+
+                        item.broken := true
+
+                        line.set_style(item.ln, line.style_dotted)
+
+                        line.set_color(item.ln, color.new(item.base_col, 80))
+
+                        label.set_textcolor(item.lb, color.new(item.base_col, 80))
+
+    true
+
+
+
+f_eng_info(string eng_code) =>
+
+    string short_t = "ᴄʟꜱ"
+
+    string full_n  = "Classic Swing Pivot SMT"
+
+    if eng_code == "MSW"
+
+        short_t := "ᴍ-ꜱᴡᴘ"
+
+        full_n  := "Main Liquidity Sweep-Stack SMT"
+
+    else if eng_code == "CSW"
+
+        short_t := "ᴄ-ꜱᴡᴘ"
+
+        full_n  := "Comparison Liquidity Sweep-Stack SMT"
+
+    else if eng_code == "FLS"
+
+        short_t := "ʟʜ/ʜʟ"
+
+        full_n  := "Failed-Sweep (Lower High / Higher Low) SMT"
+
+    else if eng_code == "LIV"
+
+        short_t := "ʟɪᴠᴇ"
+
+        full_n  := "Zero-Lag Live Intrabar Sweep SMT"
+
+    [short_t, full_n]
+
+
+
+f_build_smt_tooltip(string tf_tag, string p_name, bool inv, bool is_bull, bool is_live, string eng_code, int x1, float y1, int x2, float y2, float inv_lvl, bool is_broken) =>
+
+    [_, eng_full] = f_eng_info(eng_code)
+
+    string dir_str  = is_bull ? "BULLISH SMT ▲" : "BEARISH SMT ▼"
+
+    string st_str   = is_live ? "⚡ LIVE SWEEP (Developing)" : is_broken ? "✕ BROKEN / MITIGATED" : "✓ ACTIVE / VALID"
+
+    string corr_str = inv ? "Inverse Correlation" : "Positive Correlation"
+
+    int    span_b   = math.max(0, x2 - x1)
+
+    float  delta_p  = y2 - y1
+
+    string sign_s   = delta_p > 0 ? "+" : ""
+
+    "⚡ SMT/PSP PRO • " + tf_tag + " " + dir_str + "\n────────────────────────\n◈ Pair: " + main_name + " ⇄ " + p_name + " (" + corr_str + ")\n◈ Engine: " + eng_full + "\n◈ Anchor 1: " + str.tostring(y1, format.mintick) + "  →  Anchor 2: " + str.tostring(y2, format.mintick) + " (" + sign_s + str.tostring(delta_p, format.mintick) + ")\n◈ Span: " + str.tostring(span_b) + " Chart Bars\n◈ Invalidation: " + str.tostring(inv_lvl, format.mintick) + " (" + inv_trig + ")\n◈ Status: " + st_str
+
+
+
+f_format_label(string tf_tag, string p_name, bool is_bull, bool is_live, string eng_code, bool dual_tri, bool is_broken) =>
+
+    [eng_short, _] = f_eng_info(eng_code)
+
+    string arrow   = is_bull ? " ▲" : " ▼"
+
+    string prefix  = is_live ? "⚡ " : dual_tri ? "★ " : "◈ "
+
+    string brk_sfx = is_broken ? " ✕" : ""
+
+    string res     = ""
+
+    if is_min
+
+        string p_tag = is_tri ? (" ❲" + p_name + "❳") : (eng_code != "CLS" and not is_live and sens_mode == "High" ? " • " + eng_short : "")
+
+        res := prefix + tf_tag + arrow + p_tag + brk_sfx
+
+    else if is_pill
+
+        string e_tag = (eng_code != "CLS" and not is_live) ? (" • " + eng_short) : ""
+
+        res := prefix + tf_tag + arrow + " • " + p_name + e_tag + brk_sfx
+
+    else
+
+        string dir = is_bull ? " ʙᴜʟʟ ꜱᴍᴛ" : " ʙᴇᴀʀ ꜱᴍᴛ"
+
+        string swp = " ❲" + eng_short + "❳"
+
+        res := (is_live ? ("⚡ ʟɪᴠᴇ " + tf_tag + dir + swp + " ⇄ " + p_name) : (prefix + tf_tag + dir + swp + " ⇄ " + p_name)) + brk_sfx
+
+    res
+
+
+
+f_create_smt_label(int x1, float y1, int x2, float y2, string txt, string tip, color col, bool is_bull, bool is_live, string pos_mode, int tf_rank, int pair_slot) =>
+
+    int   lbl_x = x2
+
+    float lbl_y = y2
+
+    if pos_mode == "Center"
+
+        lbl_x := math.round(math.avg(x1, x2))
+
+        lbl_y := math.avg(y1, y2)
+
+    else if pos_mode == "Right Edge"
+
+        lbl_x := is_live ? bar_index : x2
+
+        lbl_y := is_live ? (is_bull ? low : high) : y2
+
+
+
+    float atr_unit = nz(m_atr0, syminfo.mintick * 10) * lbl_offset_atr
+
+    int   slot_idx = tf_rank + (is_tri and not lbl_merge_tri ? pair_slot : 0)
+
+    float y_shift  = (pos_mode == "Center" ? (slot_idx + 0.35) : slot_idx * 0.85) * atr_unit
+
+    float final_y  = is_bull ? (lbl_y - y_shift) : (lbl_y + y_shift)
+
+    string sz_use  = f_get_tf_lbl_size(tf_rank)
+
+    color  bg_c    = is_min ? color.new(col, 100) : is_pill ? color.new(#131722, is_live ? 12 : 18) : color.new(col, is_live ? 76 : 82)
+
+    label.new(lbl_x, final_y, txt, xloc=xloc.bar_index, color=bg_c, textcolor=col, style=is_bull ? label.style_label_up : label.style_label_down, size=sz_use, tooltip=tip)
+
+
+
+f_process_cisd_from_smt(bool allow_cisd, string tf_tag, string p_name, bool is_bull, int piv_b, float ext_price, float smt_inv_lvl, color col) =>
+
+    if show_cisd and allow_cisd and not na(piv_b) and piv_b <= bar_index
+
+        int look_bars = bar_index - piv_b
+
+        [cur_ob, cur_lvl] = f_find_cisd_origin(piv_b, is_bull)
+
+        bool trig     = false
+
+        bool violated = false
+
+        int  trig_b   = na
+
+
+
+        if look_bars > 0
+
+            int max_step = math.min(look_bars, cisd_expiry)
+
+            for step = 1 to max_step
+
+                int b_idx = piv_b + step
+
+                int off   = bar_index - b_idx
+
+                if off >= 0 and off <= math.min(bar_index, 1200)
+
+                    if (is_bull and low[off] < ext_price) or (not is_bull and high[off] > ext_price)
+
+                        violated := true
+
+                        break
+
+                    bool broke = is_bull ? (close[off] > cur_lvl) : (close[off] < cur_lvl)
+
+                    if broke
+
+                        trig   := true
+
+                        trig_b := b_idx
+
+                        break
+
+
+
+        if not violated and trig and not na(trig_b)
+
+            bool dup_cisd = (cisd_st.last_conf_ob == cur_ob and cisd_st.last_conf_tb == trig_b)
+
+            if not dup_cisd
+
+                line   c_ln  = line.new(cur_ob, cur_lvl, trig_b, cur_lvl, xloc=xloc.bar_index, color=col, width=2, style=line.style_solid)
+
+                string c_txt = is_min ? ("◈ ᴄɪꜱᴅ ✓ ❲" + tf_tag + "❳") : is_pill ? ("◈ ᴄɪꜱᴅ ✓ • " + tf_tag) : ("◈ " + tf_tag + " ꜱᴍᴛ + ᴄɪꜱᴅ ✓")
+
+                string c_tip = "⚡ SMT/PSP PRO • CONFIRMED CISD ✓\n────────────────────────\n◈ Source SMT: " + tf_tag + " (" + main_name + " ⇄ " + p_name + ")\n◈ CISD Level: " + str.tostring(cur_lvl, format.mintick)
+
+                color  c_bg  = is_pill ? color.new(#131722, 18) : color.new(col, 100)
+
+                label  c_lb  = label.new(trig_b, cur_lvl, c_txt, xloc=xloc.bar_index, color=c_bg, textcolor=col, style=is_bull ? label.style_label_down : label.style_label_up, size=lbl_size_base, tooltip=c_tip)
+
+                f_store_cisd(c_ln, c_lb, is_bull, piv_b, smt_inv_lvl, col)
+
+                cisd_st.last_conf_ob := cur_ob
+
+                cisd_st.last_conf_tb := trig_b
+
+                cisd_st.triggered    := true
+
+                cisd_st.just_conf    := true
+
+                cisd_st.is_bull      := is_bull
+
+                cisd_st.level        := cur_lvl
+
+                cisd_st.tf_tag       := tf_tag
+
+                if cisd_st.active and cisd_st.smt_bar <= piv_b
+
+                    line.delete(cisd_st.ln)
+
+                    label.delete(cisd_st.lb)
+
+                    cisd_st.active := false
+
+        else if not violated and look_bars <= cisd_expiry
+
+            if cisd_st.active
+
+                line.delete(cisd_st.ln)
+
+                label.delete(cisd_st.lb)
+
+            cisd_st.active      := true
+
+            cisd_st.triggered   := false
+
+            cisd_st.is_bull     := is_bull
+
+            cisd_st.level       := cur_lvl
+
+            cisd_st.ext_lvl     := ext_price
+
+            cisd_st.smt_inv_lvl := smt_inv_lvl
+
+            cisd_st.orig_bar    := cur_ob
+
+            cisd_st.smt_bar     := piv_b
+
+            cisd_st.tf_tag      := tf_tag
+
+            cisd_st.base_col    := col
+
+            string p_txt        = is_min ? ("◌ ᴄɪꜱᴅ ❲" + tf_tag + "❳") : is_pill ? ("◌ ᴄɪꜱᴅ • " + tf_tag) : ("◌ ᴘᴇɴᴅɪɴɢ " + tf_tag + " ᴄɪꜱᴅ")
+
+            string p_tip        = "⚡ SMT/PSP PRO • PENDING CISD\n────────────────────────\n◈ Source SMT: " + tf_tag + " (" + main_name + " ⇄ " + p_name + ")\n◈ Target Close: " + str.tostring(cur_lvl, format.mintick)
+
+            color  p_bg         = is_pill ? color.new(#131722, 22) : color.new(col, 100)
+
+            cisd_st.ln          := line.new(cur_ob, cur_lvl, bar_index, cur_lvl, xloc=xloc.bar_index, color=col, width=1, style=line.style_dashed)
+
+            cisd_st.lb          := label.new(bar_index, cur_lvl, p_txt, xloc=xloc.bar_index, color=p_bg, textcolor=col, style=is_bull ? label.style_label_down : label.style_label_up, size=lbl_size_base, tooltip=p_tip)
+
+    true
+
+
+
+f_mark_smt_broken(HistoricalSMT item) =>
+
+    item.broken := true
+
+    line.set_style(item.ln, line.style_dotted)
+
+    line.set_color(item.ln, color.new(item.base_col, 80))
+
+    label.set_textcolor(item.lb, color.new(item.base_col, 78))
+
+    label.set_text(item.lb, item.base_txt + " ✕")
+
+    label.set_tooltip(item.lb, str.replace_all(item.base_tip, "✓ ACTIVE / VALID", "✕ BROKEN / MITIGATED"))
+
+    if not is_min
+
+        label.set_color(item.lb, color.new(#131722, 88))
+
+    true
+
+
+
+f_store_smt(SMTState st, line ln, label lb, bool is_bull, float inv_lvl, int start_bar, int end_bar, color col, string base_txt, string base_tip, bool pre_broken) =>
+
+    HistoricalSMT rec = HistoricalSMT.new(ln, lb, is_bull, inv_lvl, start_bar, end_bar, col, base_txt, base_tip, pre_broken)
+
+    if pre_broken
+
+        f_mark_smt_broken(rec)
+
+    array.push(st.records, rec)
+
+    if array.size(st.records) > max_active
+
+        HistoricalSMT old = array.shift(st.records)
+
+        line.delete(old.ln)
+
+        label.delete(old.lb)
+
+    true
+
+
+
+f_check_invalidations(SMTState st) =>
+
+    int u_cnt = 0
+
+    int b_cnt = 0
+
+    if array.size(st.records) > 0
+
+        float upper_chk = inv_trig == "Wick Break" ? high : math.max(open, close)
+
+        float lower_chk = inv_trig == "Wick Break" ? low  : math.min(open, close)
+
+        for i = array.size(st.records) - 1 to 0
+
+            HistoricalSMT item = array.get(st.records, i)
+
+            if not item.broken and bar_index > item.end_bar + pivot_len and inv_action != "Keep All"
+
+                bool is_broken = item.is_bull ? (lower_chk < item.inv_lvl) : (upper_chk > item.inv_lvl)
+
+                if is_broken
+
+                    if item.is_bull
+
+                        st.brk_bull := true
+
+                    else
+
+                        st.brk_bear := true
+
+                    if inv_action == "Delete"
+
+                        line.delete(item.ln)
+
+                        label.delete(item.lb)
+
+                        array.remove(st.records, i)
+
+                        continue
+
+                    else
+
+                        f_mark_smt_broken(item)
+
+            if not item.broken
+
+                if item.is_bull
+
+                    u_cnt += 1
+
+                else
+
+                    b_cnt += 1
+
+    st.act_bull := u_cnt
+
+    st.act_bear := b_cnt
+
+    true
+
+
+
+f_push_cap(SwP[] a, SwP p) =>
+
+    array.push(a, p)
+
+    if array.size(a) > 60
+
+        array.shift(a)
+
+    true
+
+
+
+f_sweep_main(SwP[] a, float v, float comp_v, float tol_m, float tol_c, bool is_bull, bool inv) =>
+
+    SwP best_smt = na
+
+    while array.size(a) > 0
+
+        SwP t = array.last(a)
+
+        bool swept = is_bull ? (v < t.mp - tol_m) : (v > t.mp + tol_m)
+
+        if swept
+
+            SwP popped = array.pop(a)
+
+            bool comp_also_swept = is_bull ? f_out_l(comp_v, popped.cp, tol_c, inv) : f_out_h(comp_v, popped.cp, tol_c, inv)
+
+            if not comp_also_swept
+
+                best_smt := popped
+
+        else
+
+            break
+
+    best_smt
+
+
+
+f_find_unmit_main_smt(SwP[] a, float v, float comp_v, float tol_m, float tol_c, bool is_bull, bool inv) =>
+
+    SwP res = na
+
+    int sz = array.size(a)
+
+    if sz > 0
+
+        for i = sz - 1 to math.max(0, sz - 8)
+
+            SwP t = array.get(a, i)
+
+            bool main_swept = is_bull ? (v < t.mp - tol_m) : (v > t.mp + tol_m)
+
+            bool comp_swept = is_bull ? f_out_l(comp_v, t.cp, tol_c, inv) : f_out_h(comp_v, t.cp, tol_c, inv)
+
+            if not main_swept and comp_swept
+
+                res := t
+
+                break
+
+    res
+
+
+
+f_sweep_comp(SwP[] a, float v, float main_v, float tol_c, float tol_m, bool is_bull, bool inv) =>
+
+    SwP best_smt = na
+
+    while array.size(a) > 0
+
+        SwP t = array.last(a)
+
+        bool swept = is_bull ? f_out_l(v, t.cp, tol_c, inv) : f_out_h(v, t.cp, tol_c, inv)
+
+        if swept
+
+            SwP popped = array.pop(a)
+
+            bool main_also_swept = is_bull ? (main_v < popped.mp - tol_m) : (main_v > popped.mp + tol_m)
+
+            if not main_also_swept
+
+                best_smt := popped
+
+        else
+
+            break
+
+    best_smt
+
+
+
+f_try_merge_triad_smt(SMTState primary_st, bool is_bull, int x1, float y1, int x2, float y2, string tf_tag, string p2_name, bool inv2, string eng_code) =>
+
+    bool merged = false
+
+    if is_tri and lbl_merge_tri and array.size(primary_st.records) > 0
+
+        HistoricalSMT last_rec = array.last(primary_st.records)
+
+        if last_rec.is_bull == is_bull and last_rec.start_bar == x1 and last_rec.end_bar == x2
+
+            string dual_pair  = pair_name1 + "+" + p2_name
+
+            string base_d_txt = f_format_label(tf_tag, dual_pair, is_bull, false, eng_code, true, false)
+
+            string m_txt      = last_rec.broken ? (base_d_txt + " ✕") : base_d_txt
+
+            string m_tip      = f_build_smt_tooltip(tf_tag, dual_pair + " (★ Dual Triad Confirmed)", inv2, is_bull, false, eng_code, x1, y1, x2, y2, last_rec.inv_lvl, last_rec.broken)
+
+            last_rec.base_txt := base_d_txt
+
+            last_rec.base_tip := m_tip
+
+            label.set_text(last_rec.lb, m_txt)
+
+            label.set_tooltip(last_rec.lb, m_tip)
+
+            merged := true
+
+    merged
+
+
+
+f_emit_smt(SMTState st, SMTState primary_st, bool allow_cisd, string tf_tag, string p_name, bool inv, string pos_mode, bool is_bull, int x1, float y1, int x2, float y2, color col, int width, string eng_code, float tol_m) =>
+
+    bool drawn = false
+
+    int dist = x2 - x1
+
+    bool dup = is_bull ? (st.ls_bull_x1 == x1 and st.ls_bull_x2 == x2) : (st.ls_bear_x1 == x1 and st.ls_bear_x2 == x2)
+
+    bool path_ok = f_is_clean_path(x1, y1, x2, y2, is_bull, tol_m)
+
+    if dist >= min_len and dist <= max_len and not dup and path_ok
+
+        float inv_lvl = is_bull ? math.min(y1, y2) : math.max(y1, y2)
+
+        bool already_broken = false
+
+        int check_start_bar = x2 + pivot_len
+
+        if inv_action != "Keep All" and bar_index > check_start_bar
+
+            int max_k = math.min(bar_index - check_start_bar - 1, math.min(bar_index, 600))
+
+            if max_k >= 0
+
+                for k = 0 to max_k
+
+                    float chk = is_bull ? (inv_trig == "Wick Break" ? low[k] : math.min(open[k], close[k])) : (inv_trig == "Wick Break" ? high[k] : math.max(open[k], close[k]))
+
+                    bool brk = is_bull ? (chk < inv_lvl) : (chk > inv_lvl)
+
+                    if brk
+
+                        already_broken := true
+
+                        break
+
+
+
+        if not (already_broken and inv_action == "Delete")
+
+            bool was_merged = false
+
+            if st.pair_slot == 1
+
+                was_merged := f_try_merge_triad_smt(primary_st, is_bull, x1, y1, x2, y2, tf_tag, p_name, inv, eng_code)
+
+            if not was_merged
+
+                line   ln       = line.new(x1, y1, x2, y2, xloc=xloc.bar_index, color=col, width=width, style=line.style_solid)
+
+                string base_txt = f_format_label(tf_tag, p_name, is_bull, false, eng_code, false, false)
+
+                string base_tip = f_build_smt_tooltip(tf_tag, p_name, inv, is_bull, false, eng_code, x1, y1, x2, y2, inv_lvl, false)
+
+                label  lb       = f_create_smt_label(x1, y1, x2, y2, base_txt, base_tip, col, is_bull, false, pos_mode, st.tf_rank, st.pair_slot)
+
+                f_store_smt(st, ln, lb, is_bull, inv_lvl, x1, x2, col, base_txt, base_tip, already_broken and inv_action == "Fade (Ghost)")
+
+            drawn := true
+
+            if is_bull
+
+                st.ls_bull_x1 := x1
+
+                st.ls_bull_x2 := x2
+
+                st.new_bull   := true
+
+                if not already_broken
+
+                    st.last_dir := 1
+
+                    st.last_bar := x2
+
+            else
+
+                st.ls_bear_x1 := x1
+
+                st.ls_bear_x2 := x2
+
+                st.new_bear   := true
+
+                if not already_broken
+
+                    st.last_dir := -1
+
+                    st.last_bar := x2
+
+            if not already_broken
+
+                f_process_cisd_from_smt(allow_cisd, tf_tag, p_name, is_bull, x2, y2, inv_lvl, is_bull ? bull_col : bear_col)
+
+    drawn
+
+
+
+f_process_smt(SMTState st, SMTState primary_st, bool enabled, bool is_htf, bool allow_cisd, string tf_tag, string p_name, bool inv, string pos_mode, float m_ph, float m_pl, int m_to, int m_tc, float m_atr, float m_po, float m_pc, float c_ph, float c_pl, int c_to, int c_tc, float c_wh, float c_wl, float c_atr, float c_h_now, float c_l_now, color b_col, color u_col, int width) =>
+
+    line.delete(st.live_b_ln)
+
+    label.delete(st.live_b_lb)
+
+    line.delete(st.live_u_ln)
+
+    label.delete(st.live_u_lb)
+
+    st.bear_live := false
+
+    st.bull_live := false
+
+    st.new_bear  := false
+
+    st.new_bull  := false
+
+    st.brk_bear  := false
+
+    st.brk_bull  := false
+
+
+
+    if enabled
+
+        bool use_classic = sens_mode != "Medium"
+
+        bool use_stack   = sens_mode != "Low"
+
+
+
+        float comp_piv_h  = inv ? c_wl : c_wh
+
+        float comp_piv_l  = inv ? c_wh : c_wl
+
+        float comp_curr_h = inv ? c_l_now : c_h_now
+
+        float comp_curr_l = inv ? c_h_now : c_l_now
+
+        float tol_m = nz(eq_tol * m_atr)
+
+        float tol_c = nz(eq_tol * c_atr)
+
+
+
+        // 1. Main Pivot High (Bearish SMT)
+
+        if not na(m_ph) and (na(st.last_ph_to) or m_to != st.last_ph_to)
+
+            int   curr_b = bar_index - pivot_len
+
+            float curr_m = m_ph
+
+            bool  pos_ok = true
+
+            if is_htf
+
+                [b_idx, b_val, fnd] = f_find_exact_wick_bar(m_to, m_tc, true)
+
+                curr_b := b_idx
+
+                curr_m := b_val
+
+                pos_ok := fnd
+
+
+
+            if pos_ok
+
+                bool candle_ok = not candle_chk or (m_pc < m_po)
+
+                bool emitted_h = false
+
+
+
+                if use_classic and show_conf and candle_ok and not na(st.prev_ph_m)
+
+                    bool main_out = curr_m > st.prev_ph_m + tol_m
+
+                    bool comp_out = f_out_h(comp_piv_h, st.prev_ph_c, tol_c, inv)
+
+                    if main_out != comp_out
+
+                        emitted_h := f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, false, st.prev_ph_b, st.prev_ph_m, curr_b, curr_m, b_col, width, "CLS", tol_m)
+
+
+
+                if use_stack
+
+                    SwP s1 = f_sweep_main(st.ms_bear, curr_m, comp_piv_h, tol_m, tol_c, false, inv)
+
+                    if not na(s1) and show_conf and candle_ok and not emitted_h
+
+                        emitted_h := f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, false, s1.bar, s1.mp, curr_b, curr_m, b_col, width, "MSW", tol_m)
+
+                    if not emitted_h and show_conf and candle_ok
+
+                        SwP s1_lh = f_find_unmit_main_smt(st.ms_bear, curr_m, comp_piv_h, tol_m, tol_c, false, inv)
+
+                        if not na(s1_lh)
+
+                            emitted_h := f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, false, s1_lh.bar, s1_lh.mp, curr_b, curr_m, b_col, width, "FLS", tol_m)
+
+                    f_push_cap(st.ms_bear, SwP.new(curr_b, curr_m, comp_piv_h))
+
+
+
+                st.prev_ph_m := curr_m
+
+                st.prev_ph_c := comp_piv_h
+
+                st.prev_ph_b := curr_b
+
+            else
+
+                st.prev_ph_m := na
+
+                st.prev_ph_c := na
+
+                st.prev_ph_b := na
+
+
+
+            st.last_ph_to := m_to
+
+            st.ph_mit     := false
+
+
+
+        // 2. Main Pivot Low (Bullish SMT)
+
+        if not na(m_pl) and (na(st.last_pl_to) or m_to != st.last_pl_to)
+
+            int   curr_b = bar_index - pivot_len
+
+            float curr_m = m_pl
+
+            bool  pos_ok = true
+
+            if is_htf
+
+                [b_idx, b_val, fnd] = f_find_exact_wick_bar(m_to, m_tc, false)
+
+                curr_b := b_idx
+
+                curr_m := b_val
+
+                pos_ok := fnd
+
+
+
+            if pos_ok
+
+                bool candle_ok = not candle_chk or (m_pc > m_po)
+
+                bool emitted_l = false
+
+
+
+                if use_classic and show_conf and candle_ok and not na(st.prev_pl_m)
+
+                    bool main_out = curr_m < st.prev_pl_m - tol_m
+
+                    bool comp_out = f_out_l(comp_piv_l, st.prev_pl_c, tol_c, inv)
+
+                    if main_out != comp_out
+
+                        emitted_l := f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, true, st.prev_pl_b, st.prev_pl_m, curr_b, curr_m, u_col, width, "CLS", tol_m)
+
+
+
+                if use_stack
+
+                    SwP s1 = f_sweep_main(st.ms_bull, curr_m, comp_piv_l, tol_m, tol_c, true, inv)
+
+                    if not na(s1) and show_conf and candle_ok and not emitted_l
+
+                        emitted_l := f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, true, s1.bar, s1.mp, curr_b, curr_m, u_col, width, "MSW", tol_m)
+
+                    if not emitted_l and show_conf and candle_ok
+
+                        SwP s1_hl = f_find_unmit_main_smt(st.ms_bull, curr_m, comp_piv_l, tol_m, tol_c, true, inv)
+
+                        if not na(s1_hl)
+
+                            emitted_l := f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, true, s1_hl.bar, s1_hl.mp, curr_b, curr_m, u_col, width, "FLS", tol_m)
+
+                    f_push_cap(st.ms_bull, SwP.new(curr_b, curr_m, comp_piv_l))
+
+
+
+                st.prev_pl_m := curr_m
+
+                st.prev_pl_c := comp_piv_l
+
+                st.prev_pl_b := curr_b
+
+            else
+
+                st.prev_pl_m := na
+
+                st.prev_pl_c := na
+
+                st.prev_pl_b := na
+
+
+
+            st.last_pl_to := m_to
+
+            st.pl_mit     := false
+
+
+
+        // 2b. Comparison-Driven Sweep-Stack
+
+        if use_stack
+
+            float cv_b = inv ? c_pl : c_ph
+
+            if not na(cv_b) and (na(st.last_cb_to) or c_to != st.last_cb_to)
+
+                int   mb = bar_index - pivot_len
+
+                float mv = high[pivot_len]
+
+                bool  cb_ok = true
+
+                if is_htf
+
+                    [cb_idx, cb_val, cb_fnd] = f_find_exact_wick_bar(c_to, c_tc, true)
+
+                    mb := cb_idx
+
+                    mv := cb_val
+
+                    cb_ok := cb_fnd
+
+                else
+
+                    [loc_b, loc_v] = f_find_local_ext(bar_index - pivot_len, math.min(3, pivot_len), true)
+
+                    mb := loc_b
+
+                    mv := loc_v
+
+                if cb_ok
+
+                    SwP s2 = f_sweep_comp(st.cs_bear, cv_b, mv, tol_c, tol_m, false, inv)
+
+                    if not na(s2) and show_conf
+
+                        bool c_ok2 = not candle_chk or (m_pc < m_po)
+
+                        if c_ok2
+
+                            f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, false, s2.bar, s2.mp, mb, mv, b_col, width, "CSW", tol_m)
+
+                    f_push_cap(st.cs_bear, SwP.new(mb, mv, cv_b))
+
+                st.last_cb_to := c_to
+
+
+
+            float cv_u = inv ? c_ph : c_pl
+
+            if not na(cv_u) and (na(st.last_cu_to) or c_to != st.last_cu_to)
+
+                int   mb2 = bar_index - pivot_len
+
+                float mv2 = low[pivot_len]
+
+                bool  cu_ok = true
+
+                if is_htf
+
+                    [cu_idx, cu_val, cu_fnd] = f_find_exact_wick_bar(c_to, c_tc, false)
+
+                    mb2 := cu_idx
+
+                    mv2 := cu_val
+
+                    cu_ok := cu_fnd
+
+                else
+
+                    [loc_b2, loc_v2] = f_find_local_ext(bar_index - pivot_len, math.min(3, pivot_len), false)
+
+                    mb2 := loc_b2
+
+                    mv2 := loc_v2
+
+                if cu_ok
+
+                    SwP s3 = f_sweep_comp(st.cs_bull, cv_u, mv2, tol_c, tol_m, true, inv)
+
+                    if not na(s3) and show_conf
+
+                        bool c_ok3 = not candle_chk or (m_pc > m_po)
+
+                        if c_ok3
+
+                            f_emit_smt(st, primary_st, allow_cisd, tf_tag, p_name, inv, pos_mode, true, s3.bar, s3.mp, mb2, mv2, u_col, width, "CSW", tol_m)
+
+                    f_push_cap(st.cs_bull, SwP.new(mb2, mv2, cv_u))
+
+                st.last_cu_to := c_to
+
+
+
+        // 3. Check & Clean Invalidated Historical SMTs
+
+        f_check_invalidations(st)
+
+
+
+        // 4. Zero-Lag Live Sweep Engine
+
+        if show_live
+
+            if not na(st.prev_ph_m) and (not only_unmit or not st.ph_mit)
+
+                int dist_h = bar_index - st.prev_ph_b
+
+                if dist_h >= min_len and dist_h <= max_len
+
+                    bool m_swept_h = high > st.prev_ph_m + tol_m
+
+                    bool c_swept_h = f_out_h(comp_curr_h, st.prev_ph_c, tol_c, inv)
+
+                    if m_swept_h != c_swept_h
+
+                        st.bear_live := true
+
+                        if barstate.islast
+
+                            string l_eng = m_swept_h ? "MSW" : "CSW"
+
+                            string txt   = f_format_label(tf_tag, p_name, false, true, l_eng, false, false)
+
+                            string tip   = f_build_smt_tooltip(tf_tag, p_name, inv, false, true, "LIV", st.prev_ph_b, st.prev_ph_m, bar_index, high, math.max(st.prev_ph_m, high), false)
+
+                            st.live_b_ln := line.new(st.prev_ph_b, st.prev_ph_m, bar_index, high, xloc=xloc.bar_index, color=b_col, width=width, style=line.style_dashed)
+
+                            st.live_b_lb := f_create_smt_label(st.prev_ph_b, st.prev_ph_m, bar_index, high, txt, tip, b_col, false, true, pos_mode, st.tf_rank, st.pair_slot)
+
+
+
+            if not na(st.prev_pl_m) and (not only_unmit or not st.pl_mit)
+
+                int dist_l = bar_index - st.prev_pl_b
+
+                if dist_l >= min_len and dist_l <= max_len
+
+                    bool m_swept_l = low < st.prev_pl_m - tol_m
+
+                    bool c_swept_l = f_out_l(comp_curr_l, st.prev_pl_c, tol_c, inv)
+
+                    if m_swept_l != c_swept_l
+
+                        st.bull_live := true
+
+                        if barstate.islast
+
+                            string l_eng = m_swept_l ? "MSW" : "CSW"
+
+                            string txt   = f_format_label(tf_tag, p_name, true, true, l_eng, false, false)
+
+                            string tip   = f_build_smt_tooltip(tf_tag, p_name, inv, true, true, "LIV", st.prev_pl_b, st.prev_pl_m, bar_index, low, math.min(st.prev_pl_m, low), false)
+
+                            st.live_u_ln := line.new(st.prev_pl_b, st.prev_pl_m, bar_index, low, xloc=xloc.bar_index, color=u_col, width=width, style=line.style_dashed)
+
+                            st.live_u_lb := f_create_smt_label(st.prev_pl_b, st.prev_pl_m, bar_index, low, txt, tip, u_col, true, true, pos_mode, st.tf_rank, st.pair_slot)
+
+
+
+        if barstate.isconfirmed
+
+            if not na(st.prev_ph_m) and (high > st.prev_ph_m + tol_m and f_out_h(comp_curr_h, st.prev_ph_c, tol_c, inv))
+
+                st.ph_mit := true
+
+            if not na(st.prev_pl_m) and (low < st.prev_pl_m - tol_m and f_out_l(comp_curr_l, st.prev_pl_c, tol_c, inv))
+
+                st.pl_mit := true
+
+    true
+
+
+
+bool cisd_on_ctf  = cisd_src_opt == "All TFs (LTF + HTFs)"
+
+bool cisd_on_htf1 = cisd_src_opt == "HTF-1 & HTF-2" or cisd_src_opt == "All TFs (LTF + HTFs)"
+
+
+
+string ctf_lbl  = f_tf_label(timeframe.period)
+
+string htf1_lbl = f_tf_label(htf1_str)
+
+string htf2_lbl = f_tf_label(htf2_str)
+
+
+
+// Process Comparison Asset 1 (Slot 0 — pass self as dummy primary_st so UDT reference is never na)
+
+f_process_smt(st_ctf_1,  st_ctf_1,  show_ctf,   false, cisd_on_ctf,  ctf_lbl,  pair_name1, is_inv1, lbl_pos_ctf, m_ph0, m_pl0, m_to0, m_tc0, m_atr0, m_po0, m_pc0, c1_ph0, c1_pl0, c1_to0, c1_tc0, c1_wh0, c1_wl0, c1_atr0, c1_h0, c1_l0, bear_col, bull_col, ctf_w)
+
+f_process_smt(st_htf1_1, st_htf1_1, valid_htf1, true,  cisd_on_htf1, htf1_lbl, pair_name1, is_inv1, lbl_pos_h1,  m_ph1, m_pl1, m_to1, m_tc1, m_atr1, m_po1, m_pc1, c1_ph1, c1_pl1, c1_to1, c1_tc1, c1_wh1, c1_wl1, c1_atr1, c1_h0, c1_l0, htf_bear, htf_bull, htf1_w)
+
+f_process_smt(st_htf2_1, st_htf2_1, valid_htf2, true,  true,         htf2_lbl, pair_name1, is_inv1, lbl_pos_h2,  m_ph2, m_pl2, m_to2, m_tc2, m_atr2, m_po2, m_pc2, c1_ph2, c1_pl2, c1_to2, c1_tc2, c1_wh2, c1_wl2, c1_atr2, c1_h0, c1_l0, htf_bear, htf_bull, htf2_w)
+
+
+
+// Process Comparison Asset 2 (Slot 1 — Triad Mode Only)
+
+f_process_smt(st_ctf_2,  st_ctf_1,  is_tri and show_ctf,   false, cisd_on_ctf,  ctf_lbl,  pair_name2, is_inv2, lbl_pos_ctf, m_ph0, m_pl0, m_to0, m_tc0, m_atr0, m_po0, m_pc0, c2_ph0, c2_pl0, c2_to0, c2_tc0, c2_wh0, c2_wl0, c2_atr0, c2_h0, c2_l0, bear_col, bull_col, ctf_w)
+
+f_process_smt(st_htf1_2, st_htf1_1, is_tri and valid_htf1, true,  cisd_on_htf1, htf1_lbl, pair_name2, is_inv2, lbl_pos_h1,  m_ph1, m_pl1, m_to1, m_tc1, m_atr1, m_po1, m_pc1, c2_ph1, c2_pl1, c2_to1, c2_tc1, c2_wh1, c2_wl1, c2_atr1, c2_h0, c2_l0, htf_bear, htf_bull, htf1_w)
+
+f_process_smt(st_htf2_2, st_htf2_1, is_tri and valid_htf2, true,  true,         htf2_lbl, pair_name2, is_inv2, lbl_pos_h2,  m_ph2, m_pl2, m_to2, m_tc2, m_atr2, m_po2, m_pc2, c2_ph2, c2_pl2, c2_to2, c2_tc2, c2_wh2, c2_wl2, c2_atr2, c2_h0, c2_l0, htf_bear, htf_bull, htf2_w)
+
+
+
+f_check_cisd_invalidations()
+
+
+
+// ==========================================
+
+// 6. ACTIVE PENDING CISD TRACKING & CONFIRMATION
+
+// ==========================================
+
+if show_cisd and cisd_st.active
+
+    line.set_x2(cisd_st.ln, bar_index)
+
+    label.set_x(cisd_st.lb, bar_index)
+
+
+
+    bool smt_violated = cisd_st.is_bull ? (low < cisd_st.ext_lvl or low < cisd_st.smt_inv_lvl) : (high > cisd_st.ext_lvl or high > cisd_st.smt_inv_lvl)
+
+    bool body_break   = not smt_violated and (cisd_st.is_bull ? (close > cisd_st.level) : (close < cisd_st.level))
+
+
+
+    if smt_violated or (bar_index - cisd_st.smt_bar) > cisd_expiry
+
+        line.delete(cisd_st.ln)
+
+        label.delete(cisd_st.lb)
+
+        cisd_st.ln     := na
+
+        cisd_st.lb     := na
+
+        cisd_st.active := false
+
+    else if body_break
+
+        cisd_st.triggered    := true
+
+        cisd_st.active       := false
+
+        cisd_st.just_conf    := true
+
+        cisd_st.last_conf_ob := cisd_st.orig_bar
+
+        cisd_st.last_conf_tb := bar_index
+
+        line.set_style(cisd_st.ln, line.style_solid)
+
+        line.set_width(cisd_st.ln, 2)
+
+        string conf_txt = is_min ? ("◈ ᴄɪꜱᴅ ✓ ❲" + cisd_st.tf_tag + "❳") : is_pill ? ("◈ ᴄɪꜱᴅ ✓ • " + cisd_st.tf_tag) : ("◈ " + cisd_st.tf_tag + " ꜱᴍᴛ + ᴄɪꜱᴅ ✓")
+
+        label.set_text(cisd_st.lb, conf_txt)
+
+        f_store_cisd(cisd_st.ln, cisd_st.lb, cisd_st.is_bull, cisd_st.smt_bar, cisd_st.smt_inv_lvl, cisd_st.base_col)
+
+        cisd_st.ln := na
+
+        cisd_st.lb := na
+
+
+
+// ==========================================
+
+// 7. DASHBOARD (MINIMAL & DETAILED + DARK / LIGHT / MANUAL THEME)
+
+// ==========================================
+
+bool d_dark  = dash_theme == "Dark"
+
+bool d_light = dash_theme == "Light"
+
+
+
+color d_hdr_c = d_dark ? color.new(#1e222d, 15) : d_light ? color.new(#e6eaf0, 10) : dash_hdr_bg
+
+color d_row_c = d_dark ? color.new(#15171c, 20) : d_light ? color.new(#f7f9fc, 10) : dash_row_bg
+
+color d_txt_c = d_dark ? #e6e8ec : d_light ? #1e222d : dash_txt_col
+
+color d_dim_c = d_dark ? #8a8e97 : d_light ? #5d6470 : color.new(dash_txt_col, 35)
+
+color d_brd_c = d_dark ? color.new(#2a2e39, 40) : d_light ? color.new(#cfd6e0, 20) : dash_brd_col
+
+color d_bg_c  = d_dark ? color.new(#121418, 18) : d_light ? color.new(#ffffff, 10) : dash_row_bg
+
+
+
+var table hud = table.new(f_get_pos(hud_pos_inp), 4, 7, bgcolor=d_bg_c, border_color=d_brd_c, border_width=1, frame_color=d_brd_c, frame_width=1)
+
+
+
+f_row_state_comb(SMTState s1, SMTState s2, bool is_valid) =>
+
+    string st_txt  = "◌ ᴏꜰꜰ"
+
+    string age_txt = "─"
+
+    string act_txt = "─"
+
+    color  st_col  = d_dim_c
+
+    if is_valid
+
+        int tot_bull = s1.act_bull + (is_tri ? s2.act_bull : 0)
+
+        int tot_bear = s1.act_bear + (is_tri ? s2.act_bear : 0)
+
+        act_txt := str.tostring(tot_bull) + "▲  " + str.tostring(tot_bear) + "▼"
+
+
+
+        bool b_live = s1.bull_live or (is_tri and s2.bull_live)
+
+        bool r_live = s1.bear_live or (is_tri and s2.bear_live)
+
+
+
+        if b_live or r_live
+
+            st_txt  := b_live ? "⚡ ʟɪᴠᴇ ▲" : "⚡ ʟɪᴠᴇ ▼"
+
+            age_txt := "◉ ɴᴏᴡ"
+
+            st_col  := b_live ? bull_col : bear_col
+
+        else
+
+            int b1 = nz(s1.last_bar, -1)
+
+            int b2 = is_tri ? nz(s2.last_bar, -1) : -1
+
+            int best_b = math.max(b1, b2)
+
+            int best_d = best_b == b1 ? s1.last_dir : s2.last_dir
+
+            if best_d != 0 and best_b >= 0
+
+                st_txt  := best_d == 1 ? "▲ ʙᴜʟʟ" : "▼ ʙᴇᴀʀ"
+
+                int b_ago = math.max(0, bar_index - best_b)
+
+                age_txt := b_ago == 0 ? "◉ ɴᴏᴡ" : (str.tostring(b_ago) + "ʙ ᴀɢᴏ")
+
+                st_col  := best_d == 1 ? bull_col : bear_col
+
+            else
+
+                st_txt  := "◌ ꜱᴄᴀɴ"
+
+                age_txt := "─"
+
+                st_col  := d_dim_c
+
+    [st_txt, age_txt, act_txt, st_col]
+
+
+
+f_draw_row(int r, string c0, string c1, string c2, string c3, color bg0, color col0, color col1, color col2, color col3) =>
+
+    table.cell(hud, 0, r, c0, bgcolor=bg0, text_color=col0, text_size=hud_size)
+
+    table.cell(hud, 1, r, c1, bgcolor=d_row_c, text_color=col1, text_size=hud_size)
+
+    if dash_mode != "Minimal"
+
+        table.cell(hud, 2, r, c2, bgcolor=d_row_c, text_color=col2, text_size=hud_size)
+
+        table.cell(hud, 3, r, c3, bgcolor=d_row_c, text_color=col3, text_size=hud_size)
+
+    true
+
+
+
+if barstate.islast
+
+    table.clear(hud, 0, 0, 3, 6)
+
+    if show_hud
+
+        table.set_position(hud, f_get_pos(hud_pos_inp))
+
+        table.set_bgcolor(hud, d_bg_c)
+
+        table.set_border_color(hud, d_brd_c)
+
+        table.set_frame_color(hud, d_brd_c)
+
+
+
+        [s0_txt, a0_txt, c0_txt, s0_col] = f_row_state_comb(st_ctf_1,  st_ctf_2,  show_ctf)
+
+        [s1_txt, a1_txt, c1_txt, s1_col] = f_row_state_comb(st_htf1_1, st_htf1_2, valid_htf1)
+
+        [s2_txt, a2_txt, c2_txt, s2_col] = f_row_state_comb(st_htf2_1, st_htf2_2, valid_htf2)
+
+
+
+        string cisd_st_txt  = cisd_st.active ? ("◌ ᴡᴀɪᴛ " + (cisd_st.is_bull ? "▲" : "▼")) : cisd_st.triggered ? ("◈ ᴄᴏɴꜰ ✓ " + (cisd_st.is_bull ? "▲" : "▼")) : "◌ ɪᴅʟᴇ"
+
+        string cisd_tf_txt  = (cisd_st.active or cisd_st.triggered) ? ("❲" + cisd_st.tf_tag + "❳") : "─"
+
+        string cisd_lvl_txt = (cisd_st.active or cisd_st.triggered) and not na(cisd_st.level) ? str.tostring(cisd_st.level, format.mintick) : "─"
+
+        color  cisd_col     = (cisd_st.active or cisd_st.triggered) ? (cisd_st.is_bull ? bull_col : bear_col) : d_dim_c
+
+
+
+        string psp_st_txt  = not show_psp ? "◌ ᴏꜰꜰ" : psp_bull ? "◈ ʙᴜʟʟ ▲" : psp_bear ? "◈ ʙᴇᴀʀ ▼" : "◌ ꜱʏɴᴄ"
+
+        int    psp_ago     = not na(last_psp_bar) ? math.max(0, bar_index - last_psp_bar) : na
+
+        string psp_age_txt = na(psp_ago) ? "─" : psp_ago == 0 ? "◉ ɴᴏᴡ" : (str.tostring(psp_ago) + "ʙ ᴀɢᴏ")
+
+        string m_arr       = m_is_bull ? "▲" : m_is_bear ? "▼" : "─"
+
+        string c1_arr      = c1_is_bull ? "▲" : c1_is_bear ? "▼" : "─"
+
+        string c2_arr      = c2_is_bull ? "▲" : c2_is_bear ? "▼" : "─"
+
+        string psp_dir_txt = is_tri ? ("ᴍ" + m_arr + " 1" + c1_arr + " 2" + c2_arr) : (psp_bull ? "ᴍ▲ ᴄ▼" : psp_bear ? "ᴍ▼ ᴄ▲" : last_psp_dir == 1 ? "ʟᴀꜱᴛ ▲" : last_psp_dir == -1 ? "ʟᴀꜱᴛ ▼" : "─")
+
+        color  psp_hud_col = psp_bull ? psp_bull_col : psp_bear ? psp_bear_col : d_dim_c
+
+
+
+        table.cell(hud, 0, 0, "⚡ ꜱᴍᴛ/ᴘꜱᴘ ᴘʀᴏ", bgcolor=d_hdr_c, text_color=bull_col, text_size=hud_size)
+
+        table.cell(hud, 1, 0, hdr_pairs, bgcolor=d_hdr_c, text_color=d_txt_c, text_size=hud_size)
+
+
+
+        if dash_mode == "Minimal"
+
+            f_draw_row(1, "▸ " + ctf_lbl,  s0_txt, "", "", d_row_c, d_txt_c, s0_col, d_dim_c, d_txt_c)
+
+            f_draw_row(2, "▸ " + htf1_lbl, s1_txt, "", "", d_row_c, d_txt_c, s1_col, d_dim_c, d_txt_c)
+
+            f_draw_row(3, "▸ " + htf2_lbl, s2_txt, "", "", d_row_c, d_txt_c, s2_col, d_dim_c, d_txt_c)
+
+            f_draw_row(4, "◈ ᴄɪꜱᴅ", cisd_st_txt, "", "", d_hdr_c, d_dim_c, cisd_col, d_txt_c, cisd_col)
+
+            f_draw_row(5, "◈ ᴘꜱᴘ",  psp_st_txt,  "", "", d_hdr_c, d_dim_c, psp_hud_col, d_dim_c, d_txt_c)
+
+        else
+
+            string sens_u = sens_mode == "Low" ? "◈ ʟᴏᴡ" : sens_mode == "Medium" ? "◈ ᴍᴇᴅ" : "◈ ʜɪɢʜ"
+
+            string mode_u = is_tri ? "3x ᴛʀɪᴀᴅ" : (is_inv1 ? "ɪɴᴠ" : "2x ᴅᴜᴏ")
+
+            table.cell(hud, 2, 0, mode_u, bgcolor=d_hdr_c, text_color=d_dim_c, text_size=hud_size)
+
+            table.cell(hud, 3, 0, sens_u, bgcolor=d_hdr_c, text_color=d_dim_c, text_size=hud_size)
+
+
+
+            table.cell(hud, 0, 1, "ᴛꜰ",      bgcolor=d_hdr_c, text_color=d_dim_c, text_size=hud_size)
+
+            table.cell(hud, 1, 1, "ꜱᴛᴀᴛᴇ",   bgcolor=d_hdr_c, text_color=d_dim_c, text_size=hud_size)
+
+            table.cell(hud, 2, 1, "ʀᴇᴄᴇɴᴄʏ", bgcolor=d_hdr_c, text_color=d_dim_c, text_size=hud_size)
+
+            table.cell(hud, 3, 1, "ᴀᴄᴛɪᴠᴇ",  bgcolor=d_hdr_c, text_color=d_dim_c, text_size=hud_size)
+
+
+
+            f_draw_row(2, "▸ " + ctf_lbl,  s0_txt, a0_txt, c0_txt, d_row_c, d_txt_c, s0_col, d_dim_c, d_txt_c)
+
+            f_draw_row(3, "▸ " + htf1_lbl, s1_txt, a1_txt, c1_txt, d_row_c, d_txt_c, s1_col, d_dim_c, d_txt_c)
+
+            f_draw_row(4, "▸ " + htf2_lbl, s2_txt, a2_txt, c2_txt, d_row_c, d_txt_c, s2_col, d_dim_c, d_txt_c)
+
+            f_draw_row(5, "◈ ᴄɪꜱᴅ", cisd_st_txt, cisd_tf_txt, cisd_lvl_txt, d_hdr_c, d_dim_c, cisd_col, d_txt_c, cisd_col)
+
+            f_draw_row(6, "◈ ᴘꜱᴘ",  psp_st_txt,  psp_age_txt, psp_dir_txt,  d_hdr_c, d_dim_c, psp_hud_col, d_dim_c, d_txt_c)
+
+
+
+// ==========================================
+
+// 8. ALERTS (UI-CONTROLLED DYNAMIC ALERTS + ALERTCONDITIONS)
+
+// ==========================================
+
+bool any_bear_live = st_ctf_1.bear_live or st_htf1_1.bear_live or st_htf2_1.bear_live or (is_tri and (st_ctf_2.bear_live or st_htf1_2.bear_live or st_htf2_2.bear_live))
+
+bool any_bull_live = st_ctf_1.bull_live or st_htf1_1.bull_live or st_htf2_1.bull_live or (is_tri and (st_ctf_2.bull_live or st_htf1_2.bull_live or st_htf2_2.bull_live))
+
+bool any_new_bear  = st_ctf_1.new_bear  or st_htf1_1.new_bear  or st_htf2_1.new_bear  or (is_tri and (st_ctf_2.new_bear  or st_htf1_2.new_bear  or st_htf2_2.new_bear))
+
+bool any_new_bull  = st_ctf_1.new_bull  or st_htf1_1.new_bull  or st_htf2_1.new_bull  or (is_tri and (st_ctf_2.new_bull  or st_htf1_2.new_bull  or st_htf2_2.new_bull))
+
+bool any_brk_bear  = st_ctf_1.brk_bear  or st_htf1_1.brk_bear  or st_htf2_1.brk_bear  or (is_tri and (st_ctf_2.brk_bear  or st_htf1_2.brk_bear  or st_htf2_2.brk_bear))
+
+bool any_brk_bull  = st_ctf_1.brk_bull  or st_htf1_1.brk_bull  or st_htf2_1.brk_bull  or (is_tri and (st_ctf_2.brk_bull  or st_htf1_2.brk_bull  or st_htf2_2.brk_bull))
+
+
+
+bool f_bull_sc  = en_alerts and alrt_bull_sc  and cisd_st.just_conf and cisd_st.is_bull
+
+bool f_bear_sc  = en_alerts and alrt_bear_sc  and cisd_st.just_conf and not cisd_st.is_bull
+
+bool f_any_sc   = f_bull_sc or f_bear_sc
+
+bool f_bull_psp = en_alerts and alrt_bull_psp and psp_bull
+
+bool f_bear_psp = en_alerts and alrt_bear_psp and psp_bear
+
+bool f_any_psp  = f_bull_psp or f_bear_psp
+
+bool f_live_b   = en_alerts and alrt_live_smt and any_bear_live
+
+bool f_live_u   = en_alerts and alrt_live_smt and any_bull_live
+
+bool f_new_b    = en_alerts and alrt_new_smt  and any_new_bear
+
+bool f_new_u    = en_alerts and alrt_new_smt  and any_new_bull
+
+bool f_brk_b    = en_alerts and alrt_brk_smt  and any_brk_bear
+
+bool f_brk_u    = en_alerts and alrt_brk_smt  and any_brk_bull
+
+
+
+string alrt_freq = alrt_freq_inp == "Once Per Bar Close" ? alert.freq_once_per_bar_close : alert.freq_once_per_bar
+
+
+
+if f_bull_sc
+
+    alert("◈ BULLISH SMT + CISD Confirmed ✓ on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_bear_sc
+
+    alert("◈ BEARISH SMT + CISD Confirmed ✓ on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_bull_psp
+
+    alert("◈ Bullish PSP Candle Polarity Divergence on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_bear_psp
+
+    alert("◈ Bearish PSP Candle Polarity Divergence on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_live_b
+
+    alert("⚡ Live Bearish SMT Sweep on " + syminfo.ticker + " (" + ctf_lbl + ")", alert.freq_once_per_bar)
+
+if f_live_u
+
+    alert("⚡ Live Bullish SMT Sweep on " + syminfo.ticker + " (" + ctf_lbl + ")", alert.freq_once_per_bar)
+
+if f_new_b
+
+    alert("◈ New Bearish SMT Formed on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_new_u
+
+    alert("◈ New Bullish SMT Formed on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_brk_b
+
+    alert("✕ Bearish SMT Broken on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+if f_brk_u
+
+    alert("✕ Bullish SMT Broken on " + syminfo.ticker + " (" + ctf_lbl + ")", alrt_freq)
+
+
+
+alertcondition(f_bull_sc,  title="1. ★ Bullish SMT + CISD Confirmed (Buy Setup)", message="◈ BULLISH SMT + CISD Confirmed ✓ on {{ticker}} (Chart: {{interval}})")
+
+alertcondition(f_bear_sc,  title="2. ★ Bearish SMT + CISD Confirmed (Sell Setup)", message="◈ BEARISH SMT + CISD Confirmed ✓ on {{ticker}} (Chart: {{interval}})")
+
+alertcondition(f_any_sc,   title="3. ★ Any SMT + CISD Confirmed (Bull or Bear)", message="◈ SMT + CISD Setup Confirmed ✓ on {{ticker}} (Chart: {{interval}})")
+
+alertcondition(f_bull_psp, title="4. ★ Bullish PSP Candle (Main Bull / Comp Bear)", message="◈ Bullish PSP Candle Polarity Divergence on {{ticker}} ({{interval}})")
+
+alertcondition(f_bear_psp, title="5. ★ Bearish PSP Candle (Main Bear / Comp Bull)", message="◈ Bearish PSP Candle Polarity Divergence on {{ticker}} ({{interval}})")
+
+alertcondition(f_any_psp,  title="6. ★ Any PSP Candle Detected", message="◈ PSP Candle Polarity Divergence on {{ticker}} ({{interval}})")
+
+alertcondition(f_live_b,   title="7. Any TF Live Bearish SMT", message="⚡ Live Bearish SMT Sweep detected on {{ticker}} (Chart: {{interval}})")
+
+alertcondition(f_live_u,   title="8. Any TF Live Bullish SMT", message="⚡ Live Bullish SMT Sweep detected on {{ticker}} (Chart: {{interval}})")
+
+alertcondition(f_new_b,    title="9. New Bearish SMT Formed", message="◈ Bearish SMT formed on {{ticker}} ({{interval}})")
+
+alertcondition(f_new_u,    title="10. New Bullish SMT Formed", message="◈ Bullish SMT formed on {{ticker}} ({{interval}})")
+
+alertcondition(f_brk_b,    title="11. Bearish SMT Broken", message="✕ Bearish SMT broken on {{ticker}} ({{interval}})")
+
+alertcondition(f_brk_u,    title="12. Bullish SMT Broken", message="✕ Bullish SMT broken on {{ticker}} ({{interval}})")
+
